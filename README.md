@@ -1,19 +1,101 @@
-# React + TypeScript + Vite
+# Application Name
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+A brief description of what this application does and its purpose.
 
-Currently, two official plugins are available:
+## Table of Contents
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- [About](#about)
+- [Getting Started](#getting-started)
+- [Available Scripts](#available-scripts)
+- [Project Structure](#project-structure)
+- [Technologies](#technologies)
+- [Configuration](#configuration)
 
-## React Compiler
+## About
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+This application is built with React + TypeScript + Vite. It provides a modern development experience with hot module replacement (HMR), linting with Oxlint, and ready-to-use React Compiler configuration.
 
-## Expanding the Oxlint configuration
+The application follows best practices for type safety, component organization, and build performance.
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
+## Getting Started
+
+### Prerequisites
+
+- Node.js (v18 or higher)
+- npm, yarn, pnpm, or bun
+
+### Installation
+
+```bash
+npm install
+# or
+yarn install
+# or
+pnpm install
+# or
+bun install
+```
+
+### Development
+
+```bash
+npm run dev
+# or
+yarn dev
+# or
+pnpm dev
+# or
+bun dev
+```
+
+The app will be available at `http://localhost:5173`.
+
+### Building for Production
+
+```bash
+npm run build
+# or
+yarn build
+# or
+pnpm build
+# or
+bun build
+```
+
+## Available Scripts
+
+| Script | Description |
+|--------|-------------|
+| `dev` | Start development server with HMR |
+| `build` | Build for production |
+| `lint` | Run Oxlint to check code quality |
+| `preview` | Preview production build locally |
+
+## Project Structure
+
+```
+src/
+  ├── components/   # Reusable UI components
+  ├── pages/        # Page components
+  ├── hooks/        # Custom React hooks
+  ├── utils/        # Utility functions
+  ├── styles/       # Global styles
+  └── types/        # TypeScript type definitions
+```
+
+## Technologies
+
+- **React** - UI library
+- **TypeScript** - Type safety
+- **Vite** - Build tool and dev server
+- **Oxlint** - Linting with type-aware rules
+- **React Compiler** - Optional compilation optimizations
+
+## Configuration
+
+### Oxlint
+
+To enable type-aware linting, install `oxlint-tsgolint` and configure `.oxlintrc.json`:
 
 ```json
 {
@@ -29,4 +111,6 @@ If you are developing a production application, we recommend enabling type-aware
 }
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+### React Compiler
+
+The React Compiler is not enabled by default due to performance considerations. To add it, see the [React Compiler documentation](https://react.dev/learn/react-compiler/installation).
