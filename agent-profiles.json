@@ -1,0 +1,47 @@
+[
+  {
+    "id": "claude-code",
+    "name": "Claude Code",
+    "binary": "claude",
+    "capability": "large refactors and multi-file reasoning",
+    "available": true,
+    "status": "ready",
+    "version": "2.1.133 (Claude Code)"
+  },
+  {
+    "id": "codex",
+    "name": "Codex",
+    "binary": "codex",
+    "capability": "small well-defined functions and boilerplate",
+    "available": false,
+    "status": "not-installed",
+    "version": null
+  },
+  {
+    "id": "antigravity",
+    "name": "Antigravity",
+    "binary": "agy",
+    "capability": "browser and UI verification",
+    "available": false,
+    "status": "not-installed",
+    "version": null
+  },
+  {
+    "id": "aider",
+    "name": "Aider",
+    "binary": "aider",
+    "capability": "small precise diffs and tight scope",
+    "available": false,
+    "status": "not-installed",
+    "version": null
+  },
+  {
+    "id": "opencode",
+    "name": "OpenCode",
+    "binary": "opencode",
+    "capability": "general-purpose planning and fallback work",
+    "available": false,
+    "status": "installed-not-signed-in",
+    "version": "1.18.16"
+  }
+]

@@ -1,0 +1,23 @@
+{
+  "mcpServers": [
+    {
+      "name": "GitHub MCP",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
+      "env": {}
+    },
+    {
+      "name": "Filesystem MCP",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "."
+      ],
+      "env": {}
+    }
+  ]
+}
