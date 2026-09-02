@@ -81,9 +81,18 @@ const previewServers = new Map<string, { proc: ChildProcess; port: number; taskI
 
 // ─── Window ──────────────────────────────────────────────────────────────────
 function createWindow() {
+  const publicDir = process.env.VITE_PUBLIC || join(process.env.APP_ROOT || '', 'public')
+  const buildDir = join(process.env.APP_ROOT || '', 'build')
+  const iconCandidate = existsSync(join(publicDir, 'icon.png'))
+    ? join(publicDir, 'icon.png')
+    : existsSync(join(buildDir, 'icon.png'))
+    ? join(buildDir, 'icon.png')
+    : undefined
+
   win = new BrowserWindow({
     width: 1440,
     height: 900,
+    icon: iconCandidate,
     titleBarStyle: 'hidden',
     titleBarOverlay: {
       color: '#09090b',

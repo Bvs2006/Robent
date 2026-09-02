@@ -37,7 +37,7 @@ const TOOL_BINARIES: Record<ToolId, string> = {
 const TOOL_WEB_URLS: Record<ToolId, string> = {
   'claude-code': 'https://console.anthropic.com',
   codex: 'https://platform.openai.com',
-  antigravity: 'https://antigravity.google.com',
+  antigravity: 'https://antigravity.google',
   aider: 'https://aider.chat',
   opencode: 'https://opencode.ai',
 }

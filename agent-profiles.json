@@ -22,9 +22,9 @@
     "name": "Antigravity",
     "binary": "agy",
     "capability": "browser and UI verification",
-    "available": false,
-    "status": "not-installed",
-    "version": null
+    "available": true,
+    "status": "ready",
+    "version": "1.1.24"
   },
   {
     "id": "aider",
@@ -32,16 +32,16 @@
     "binary": "aider",
     "capability": "small precise diffs and tight scope",
     "available": false,
-    "status": "not-installed",
-    "version": null
+    "status": "installed-not-signed-in",
+    "version": "python.exe C:\\Users\\bvsru\\AppData\\Roaming\\Python\\Python314\\Scripts\\aider\r\n0.86.3.dev+less"
   },
   {
     "id": "opencode",
     "name": "OpenCode",
     "binary": "opencode",
     "capability": "general-purpose planning and fallback work",
-    "available": false,
-    "status": "not-installed",
-    "version": null
+    "available": true,
+    "status": "ready",
+    "version": "1.18.26"
   }
 ]

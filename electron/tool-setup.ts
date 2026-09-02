@@ -77,10 +77,16 @@ export const TOOL_DEFINITIONS: Record<ToolId, ToolDefinition> = {
     name: 'Antigravity',
     binary: 'agy',
     versionFlag: '--version',
-    installCommand: 'npm install -g @google/antigravity-cli',
+    installCommand:
+      os.platform() === 'win32'
+        ? 'powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://antigravity.google/cli/install.ps1 | iex"'
+        : 'curl -fsSL https://antigravity.google/cli/install.sh | bash',
     authCommand: 'agy',
-    authArgs: ['status'],
-    authSuccessPatterns: [/ready/i, /authenticated/i, /signed in/i, /ok/i],
+    authArgs: [],
+    authProbeCommand: 'agy',
+    authProbeArgs: ['models'],
+    authProbeStrict: false,
+    authSuccessPatterns: [/gemini/i, /claude/i, /ready/i, /authenticated/i, /signed in/i, /ok/i],
     authErrorPatterns: [/authentication required/i, /not logged in/i, /login required/i, /unauthorized/i, /401/i],
     capability: 'browser and UI verification',
   },
@@ -140,14 +146,14 @@ function existingDirs(paths: string[]): string[] {
 function pythonScriptDirs(root?: string): string[] {
   if (!root || !existsSync(root)) return []
   try {
-    const dirs: string[] = []
+    const dirs: string[] = [root, join(root, 'Scripts')]
     for (const entry of readdirSync(root, { withFileTypes: true })) {
       if (entry.isDirectory() && /^Python\d+/i.test(entry.name)) {
         dirs.push(join(root, entry.name))
         dirs.push(join(root, entry.name, 'Scripts'))
       }
     }
-    return dirs.filter((candidate) => existsSync(candidate))
+    return dirs.filter((candidate) => candidate && existsSync(candidate))
   } catch {
     return []
   }
@@ -163,8 +169,8 @@ function normalizeWindowsCommandLine(commandLine: string): string {
 
 /**
  * Electron apps on Windows are commonly started from the Start menu and do
- * not inherit the PATH that the user's terminal has.  npm global binaries
- * then appear to be missing even though `npm` can see them.  Add the usual
+ * not inherit the PATH that the user's terminal has. npm global binaries
+ * then appear to be missing even though `npm` can see them. Add the usual
  * npm/node locations to every probe and action without mutating the process
  * environment globally.
  */
@@ -180,10 +186,18 @@ export function toolEnv(): Record<string, string> {
     process.env['ProgramFiles(x86)'] ? join(process.env['ProgramFiles(x86)'], 'nodejs') : '',
     process.env.ProgramData ? join(process.env.ProgramData, 'chocolatey', 'bin') : '',
     process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Microsoft', 'WindowsApps') : '',
+    process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'agy', 'bin') : '',
+    userProfile ? join(userProfile, 'AppData', 'Local', 'agy', 'bin') : '',
     userProfile ? join(userProfile, 'scoop', 'shims') : '',
     userProfile ? join(userProfile, '.local', 'bin') : '',
+    userProfile ? join(userProfile, '.gemini', 'bin') : '',
+    userProfile ? join(userProfile, '.antigravity', 'bin') : '',
+    userProfile ? join(userProfile, 'bin') : '',
     ...pythonScriptDirs(process.env.APPDATA ? join(process.env.APPDATA, 'Python') : undefined),
     ...pythonScriptDirs(process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Programs', 'Python') : undefined),
+    ...pythonScriptDirs(process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Python') : undefined),
+    ...pythonScriptDirs(join(userProfile, 'AppData', 'Roaming', 'Python')),
+    ...pythonScriptDirs(join(userProfile, 'AppData', 'Local', 'Programs', 'Python')),
   ].filter(Boolean)
   const current = (env.PATH || env.Path || '').split(';').filter(Boolean)
   const merged = [...new Set([...current, ...existingDirs(candidates)])]

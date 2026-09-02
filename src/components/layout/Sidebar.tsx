@@ -31,8 +31,8 @@ export default function Sidebar() {
       {/* Logo */}
       <div className="px-4 pt-10 pb-5">
         <div className="flex items-center gap-2.5">
-          <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-sky-500 to-blue-700 flex items-center justify-center shrink-0">
-            <Zap className="w-4 h-4 text-white" />
+          <div className="w-8 h-8 rounded-lg bg-[#141419] border border-[#22222a] flex items-center justify-center shrink-0 p-1 shadow-sm">
+            <img src="/logo-white.png" alt="Robent Logo" className="w-full h-full object-contain" />
           </div>
           <div>
             <div className="text-white font-bold text-sm tracking-tight">Robent</div>

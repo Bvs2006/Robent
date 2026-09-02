@@ -28,10 +28,9 @@ export default defineConfig({
       },
     }),
   ],
-  // Tauri expects a fixed port in dev mode
   server: {
     port: 1420,
-    strictPort: true,
+    strictPort: false,
     open: false,
   },
   // Tauri uses the built files from this directory
