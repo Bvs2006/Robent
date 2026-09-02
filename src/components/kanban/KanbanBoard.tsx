@@ -1,3 +1,4 @@
+import { Trash2 } from 'lucide-react'
 import { useFleetStore } from '../../store/fleetStore'
 import { KanbanCard } from './KanbanCard'
 import type { TaskStatus } from '../../types'
@@ -11,7 +12,7 @@ const COLUMNS: { id: TaskStatus; title: string; color: string }[] = [
 ]
 
 export const KanbanBoard = () => {
-  const { tasks } = useFleetStore()
+  const { tasks, clearPlannedTasks } = useFleetStore()
 
   return (
     <div className="flex flex-row gap-3 p-4 overflow-x-auto flex-1 items-start h-full bg-[#09090b]">
@@ -28,9 +29,26 @@ export const KanbanBoard = () => {
                 <span className={`w-2 h-2 rounded-full ${col.color}`} />
                 <span className="text-[11px] font-bold text-zinc-300 uppercase tracking-widest">{col.title}</span>
               </div>
-              <span className="text-[11px] font-mono text-zinc-500 bg-[#18181e] border border-[#222229] px-1.5 py-0.5 rounded-full">
-                {colTasks.length}
-              </span>
+              <div className="flex items-center gap-1.5">
+                {col.id === 'planned' && colTasks.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (window.confirm(`Are you sure you want to delete all ${colTasks.length} planned tasks?`)) {
+                        void clearPlannedTasks()
+                      }
+                    }}
+                    className="p-1 text-zinc-500 hover:text-red-400 hover:bg-red-950/40 rounded border border-transparent hover:border-red-800/40 transition-colors"
+                    title="Delete all planned tasks"
+                    aria-label="Delete all planned tasks"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+                <span className="text-[11px] font-mono text-zinc-500 bg-[#18181e] border border-[#222229] px-1.5 py-0.5 rounded-full">
+                  {colTasks.length}
+                </span>
+              </div>
             </div>
 
             {/* Cards */}

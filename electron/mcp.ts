@@ -5,7 +5,7 @@
  * and exposes utilities to connect agents to MCP tools.
  */
 import { writeFileSync, mkdirSync, existsSync } from 'fs'
-import { join } from 'path'
+import { dirname, join } from 'path'
 import { getMcpServers } from './db.js'
 
 export interface McpServerConfig {
@@ -66,7 +66,7 @@ export function writeAgentMcpConfig(agent: string, workdir: string): string | nu
   if (!config) return null
 
   const configPath = config.path(workdir)
-  const configDir = join(...configPath.split(/[/\\]/).slice(0, -1))
+  const configDir = dirname(configPath)
 
   if (!existsSync(configDir)) {
     mkdirSync(configDir, { recursive: true })
@@ -74,12 +74,18 @@ export function writeAgentMcpConfig(agent: string, workdir: string): string | nu
 
   let fileContent: string
   if (config.format === 'json') {
-    fileContent = JSON.stringify({ mcpServers: servers.map(s => ({
-      name: s.name,
-      command: s.command,
-      args: s.args,
-      env: s.env,
-    })) }, null, 2)
+    const payload: any = {
+      mcpServers: servers.map(s => ({
+        name: s.name,
+        command: s.command,
+        args: s.args,
+        env: s.env,
+      }))
+    }
+    if (agentKey.includes('opencode')) {
+      payload.tools = { '*': true }
+    }
+    fileContent = JSON.stringify(payload, null, 2)
   } else {
     fileContent = ''
   }

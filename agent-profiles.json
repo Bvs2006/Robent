@@ -13,9 +13,9 @@
     "name": "Codex",
     "binary": "codex",
     "capability": "small well-defined functions and boilerplate",
-    "available": false,
-    "status": "not-installed",
-    "version": null
+    "available": true,
+    "status": "ready",
+    "version": "codex-cli 0.147.0"
   },
   {
     "id": "antigravity",
@@ -41,7 +41,7 @@
     "binary": "opencode",
     "capability": "general-purpose planning and fallback work",
     "available": false,
-    "status": "installed-not-signed-in",
-    "version": "1.18.16"
+    "status": "not-installed",
+    "version": null
   }
 ]

@@ -1,12 +1,14 @@
 import { useFleetStore } from '../../store/fleetStore'
 import {
-  LayoutDashboard, Clock, Settings, Zap, ChevronRight, BookOpen, FolderOpen, Plus, Wrench
+  LayoutDashboard, Clock, Settings, Zap, ChevronRight, FolderOpen, Plus, Wrench, GitBranch, GitPullRequest, Terminal
 } from 'lucide-react'
 import type { PageId } from '../../types'
 
 const navItems: { id: PageId; label: string; icon: any }[] = [
   { id: 'dashboard', label: 'Board', icon: LayoutDashboard },
   { id: 'sessions', label: 'Sessions', icon: Clock },
+  { id: 'worktrees', label: 'Worktrees', icon: GitBranch },
+  { id: 'pullRequests', label: 'Reviews', icon: GitPullRequest },
   { id: 'projects', label: 'Projects', icon: FolderOpen },
   { id: 'settings', label: 'Settings', icon: Settings },
 ]
@@ -15,7 +17,8 @@ export default function Sidebar() {
   const currentPage = useFleetStore((s) => s.currentPage)
   const setCurrentPage = useFleetStore((s) => s.setCurrentPage)
   const setShowNewTaskModal = useFleetStore((s) => s.setShowNewTaskModal)
-  const setToolSetupCompleted = useFleetStore((s) => s.setToolSetupCompleted)
+  const setShowToolSetupModal = useFleetStore((s) => s.setShowToolSetupModal)
+  const setShowOrchestrator = useFleetStore((s) => s.setShowOrchestrator)
   const tasks = useFleetStore((s) => s.tasks)
   const workers = useFleetStore((s) => s.workers)
 
@@ -65,7 +68,14 @@ export default function Sidebar() {
           New Task
         </button>
         <button
-          onClick={() => setToolSetupCompleted(false)}
+          onClick={() => setShowOrchestrator(true)}
+          className="w-full flex items-center gap-2.5 rounded-lg border border-sky-800/50 bg-sky-950/30 px-3 py-2 text-xs font-semibold text-sky-300 hover:bg-sky-950/50 hover:text-sky-200 transition-colors"
+        >
+          <Terminal className="w-3.5 h-3.5 text-sky-400" />
+          Orchestrator
+        </button>
+        <button
+          onClick={() => setShowToolSetupModal(true)}
           className="w-full flex items-center gap-2.5 rounded-lg border border-[#24242b] bg-[#111115] px-3 py-2 text-xs font-semibold text-zinc-300 hover:bg-[#17171c] hover:text-white transition-colors"
         >
           <Wrench className="w-3.5 h-3.5 text-zinc-500" />
@@ -110,8 +120,8 @@ export default function Sidebar() {
           <span className="text-[11px] text-zinc-400 font-mono">LOCAL</span>
         </div>
         <div className="flex items-center gap-2 px-2 py-1 text-[10px] text-zinc-600">
-          <BookOpen className="w-3 h-3" />
-          <span>v0.2.0 — PRD complete</span>
+          <Zap className="w-3 h-3" />
+          <span>v0.2.0 — local orchestrator</span>
         </div>
       </div>
 

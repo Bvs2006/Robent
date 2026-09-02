@@ -6,9 +6,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getJob: (id) => ipcRenderer.invoke('get-job', id),
   createJob: (job) => ipcRenderer.invoke('create-job', job),
   updateJob: (id, fields) => ipcRenderer.invoke('update-job', id, fields),
+  deleteJob: (id) => ipcRenderer.invoke('delete-job', id),
   getActivities: () => ipcRenderer.invoke('get-activities'),
   getWorkers: () => ipcRenderer.invoke('get-workers'),
   getTerminalLines: (jobId) => ipcRenderer.invoke('get-terminal-lines', jobId),
+  sendTaskInput: (taskId, data) => ipcRenderer.invoke('send-task-input', { taskId, data }),
 
   // Tool setup
   getToolStatuses: () => ipcRenderer.invoke('get-tool-statuses'),
@@ -17,14 +19,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setToolSetupCompleted: (completed) => ipcRenderer.invoke('set-tool-setup-completed', completed),
   saveToolSecret: (payload) => ipcRenderer.invoke('save-tool-secret', payload),
   runToolAction: (payload) => ipcRenderer.invoke('run-tool-action', payload),
+  writeToolInput: (payload) => ipcRenderer.invoke('write-tool-input', payload),
+  killToolSession: (sessionId) => ipcRenderer.invoke('kill-tool-session', sessionId),
+  getToolAuthCapabilities: () => ipcRenderer.invoke('get-tool-auth-capabilities'),
 
   // Task execution
+  planTask: (payload) => ipcRenderer.invoke('plan-task', payload),
   runTask: (taskId, agent, workdir) => ipcRenderer.invoke('run-task', { taskId, agent, workdir }),
+  retryTask: (taskId, feedback) => ipcRenderer.invoke('retry-task', { taskId, feedback }),
   cancelTask: (taskId) => ipcRenderer.invoke('cancel-task', taskId),
+  setTaskExecutionMode: (taskId, mode) => ipcRenderer.invoke('set-task-execution-mode', { taskId, mode }),
+  setTaskCustomPool: (taskId, pool) => ipcRenderer.invoke('set-task-custom-pool', { taskId, pool }),
   killAll: () => ipcRenderer.invoke('kill-all'),
-  runRace: (taskId, agents, workdir) => ipcRenderer.invoke('run-race', { taskId, agents, workdir }),
   mergeTask: (taskId) => ipcRenderer.invoke('merge-task', taskId),
   discardTask: (taskId) => ipcRenderer.invoke('discard-task', taskId),
+  createWorktree: (payload) => ipcRenderer.invoke('create-worktree', payload),
+  listBranches: (workdir) => ipcRenderer.invoke('list-branches', workdir),
 
   // MCP Servers
   getMcpServers: () => ipcRenderer.invoke('get-mcp-servers'),
@@ -64,22 +74,75 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setSetting: (key, value) => ipcRenderer.invoke('set-setting', key, value),
   showOpenDialog: () => ipcRenderer.invoke('show-open-dialog'),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
+  openNativeTerminal: () => ipcRenderer.invoke('open-native-terminal'),
 
   // Preview server (Phase I)
   startPreviewServer: (taskId) => ipcRenderer.invoke('start-preview-server', taskId),
   stopPreviewServer: (taskId) => ipcRenderer.invoke('stop-preview-server', taskId),
 
+  // Hooks
+  getHooks: () => ipcRenderer.invoke('get-hooks'),
+  addHook: (hook) => ipcRenderer.invoke('add-hook', hook),
+  updateHook: (id, fields) => ipcRenderer.invoke('update-hook', { id, fields }),
+  deleteHook: (id) => ipcRenderer.invoke('delete-hook', id),
+  toggleHook: (id, enabled) => ipcRenderer.invoke('toggle-hook', { id, enabled }),
+  testHookCommand: (command) => ipcRenderer.invoke('test-hook-command', command),
+
+  // Plan Approval & Command Approval
+  approvePlan: (taskId) => ipcRenderer.invoke('approve-plan', taskId),
+  updateSubtaskAgent: (taskId, subtaskId, agent) => ipcRenderer.invoke('update-subtask-agent', { taskId, subtaskId, agent }),
+  respondCommandApproval: (taskId, promptId, approve) => ipcRenderer.invoke('respond-command-approval', { taskId, promptId, approve }),
+
   // Event listeners
-  onTaskOutput: (cb) => ipcRenderer.on('task-output', (_e, taskId, chunk) => cb(taskId, chunk)),
-  onTaskDone: (cb) => ipcRenderer.on('task-done', (_e, taskId, result) => cb(taskId, result)),
-  onStateChanged: (cb) => ipcRenderer.on('state-changed', () => cb()),
-  onRuntimeTick: (cb) => ipcRenderer.on('runtime-tick', (_e, runtimes) => cb(runtimes)),
-  onRaceOutput: (cb) => ipcRenderer.on('race-output', (_e, taskId, agent, chunk) => cb(taskId, agent, chunk)),
-  onRaceResult: (cb) => ipcRenderer.on('race-result', (_e, taskId, agent, result) => cb(taskId, agent, result)),
-  onPreviewReady: (cb) => ipcRenderer.on('preview-ready', (_e, taskId, port, output) => cb(taskId, port, output)),
-  onToolOutput: (cb) => ipcRenderer.on('tool-output', (_e, toolId, sessionId, chunk) => cb(toolId, sessionId, chunk)),
-  onToolActionStarted: (cb) => ipcRenderer.on('tool-action-started', (_e, toolId, sessionId, kind) => cb(toolId, sessionId, kind)),
-  onToolActionEnded: (cb) => ipcRenderer.on('tool-action-ended', (_e, toolId, sessionId, exitCode, output) => cb(toolId, sessionId, exitCode, output)),
-  onToolStatusesChanged: (cb) => ipcRenderer.on('tool-statuses-changed', (_e, statuses) => cb(statuses)),
+  onCommandApprovalRequested: (cb) => {
+    const listener = (_e, payload) => cb(payload)
+    ipcRenderer.on('command-approval-requested', listener)
+    return () => ipcRenderer.removeListener('command-approval-requested', listener)
+  },
+  onTaskOutput: (cb) => {
+    const listener = (_e, taskId, chunk) => cb(taskId, chunk)
+    ipcRenderer.on('task-output', listener)
+    return () => ipcRenderer.removeListener('task-output', listener)
+  },
+  onTaskDone: (cb) => {
+    const listener = (_e, taskId, result) => cb(taskId, result)
+    ipcRenderer.on('task-done', listener)
+    return () => ipcRenderer.removeListener('task-done', listener)
+  },
+  onStateChanged: (cb) => {
+    const listener = () => cb()
+    ipcRenderer.on('state-changed', listener)
+    return () => ipcRenderer.removeListener('state-changed', listener)
+  },
+  onRuntimeTick: (cb) => {
+    const listener = (_e, runtimes) => cb(runtimes)
+    ipcRenderer.on('runtime-tick', listener)
+    return () => ipcRenderer.removeListener('runtime-tick', listener)
+  },
+  onPreviewReady: (cb) => {
+    const listener = (_e, taskId, port, output) => cb(taskId, port, output)
+    ipcRenderer.on('preview-ready', listener)
+    return () => ipcRenderer.removeListener('preview-ready', listener)
+  },
+  onToolOutput: (cb) => {
+    const listener = (_e, toolId, sessionId, chunk) => cb(toolId, sessionId, chunk)
+    ipcRenderer.on('tool-output', listener)
+    return () => ipcRenderer.removeListener('tool-output', listener)
+  },
+  onToolActionStarted: (cb) => {
+    const listener = (_e, toolId, sessionId, kind) => cb(toolId, sessionId, kind)
+    ipcRenderer.on('tool-action-started', listener)
+    return () => ipcRenderer.removeListener('tool-action-started', listener)
+  },
+  onToolActionEnded: (cb) => {
+    const listener = (_e, toolId, sessionId, exitCode, output) => cb(toolId, sessionId, exitCode, output)
+    ipcRenderer.on('tool-action-ended', listener)
+    return () => ipcRenderer.removeListener('tool-action-ended', listener)
+  },
+  onToolStatusesChanged: (cb) => {
+    const listener = (_e, statuses) => cb(statuses)
+    ipcRenderer.on('tool-statuses-changed', listener)
+    return () => ipcRenderer.removeListener('tool-statuses-changed', listener)
+  },
   removeAllListeners: (channel) => ipcRenderer.removeAllListeners(channel),
 })

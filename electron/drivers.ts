@@ -1,13 +1,13 @@
 /**
  * electron/drivers.ts — Agent Driver Layer
- * 
- * BaseDriver: abstract class with run/cancel interface
+ *
  * Each concrete driver spawns the actual CLI via node-pty.
  * All drivers normalize output to { status, summary, raw, tokenCount, cost }
  */
 import { spawn } from 'node-pty'
 import type { IPty } from 'node-pty'
 import * as os from 'os'
+import { toolEnv } from './tool-setup.js'
 
 export interface TaskResult {
   status: 'success' | 'failed'
@@ -19,37 +19,68 @@ export interface TaskResult {
 
 type OutputCallback = (chunk: string) => void
 
+function quoteArg(arg: string): string {
+  if (os.platform() === 'win32') {
+    if (!/[\s&<>|^()"]/.test(arg)) return arg
+    return `"${arg.replace(/"/g, '\\"')}"`
+  }
+  if (/^[A-Za-z0-9_./:=+-]+$/.test(arg)) return arg
+  return `'${arg.replace(/'/g, `'\\''`)}'`
+}
+
+export interface DriverOptions {
+  model?: string
+  approvalMode?: boolean
+}
+
 export abstract class BaseDriver {
   protected ptyProcess: IPty | null = null
   protected rawOutput: string = ''
+  private timeoutHandle: ReturnType<typeof setTimeout> | null = null
 
-  /** Return the command + args for this agent */
-  abstract getCommandAndArgs(task: string): { command: string; args: string[] }
+  abstract getCommandAndArgs(task: string, options?: DriverOptions): { command: string; args: string[] }
 
-  /** Parse raw output to extract summary, tokens, cost */
   protected parseResult(_raw: string): Partial<TaskResult> {
     return {}
   }
 
-  run(task: string, workdir: string, onOutput: OutputCallback): { jobId: string; promise: Promise<TaskResult> } {
+  run(
+    task: string,
+    workdir: string,
+    onOutput: OutputCallback,
+    extraEnv: Record<string, string> = {},
+    timeoutMs = 30 * 60 * 1000,
+    options?: DriverOptions,
+  ): { jobId: string; promise: Promise<TaskResult> } {
     const jobId = Math.random().toString(36).substring(7)
     this.rawOutput = ''
 
     const promise = new Promise<TaskResult>((resolve) => {
-      const { command, args } = this.getCommandAndArgs(task)
+      const { command, args } = this.getCommandAndArgs(task, options)
       const isWin = os.platform() === 'win32'
       const shell = isWin ? 'cmd.exe' : 'bash'
-      const fullCmd = [command, ...args].join(' ')
-      const shellArgs = isWin
-        ? ['/c', fullCmd]
-        : ['-c', fullCmd]
+      const fullCmd = [command, ...args.map(quoteArg)].join(' ')
+      // On Windows, node-pty auto-quotes array elements which breaks cmd.exe /s /c.
+      // Pass as a single joined string so node-pty passes it verbatim.
+      const shellArgs = isWin ? ['/d', '/s', '/c', `"${fullCmd}"`] : ['-lc', fullCmd]
+      let settled = false
+
+      const finish = (result: TaskResult) => {
+        if (settled) return
+        settled = true
+        if (this.timeoutHandle) {
+          clearTimeout(this.timeoutHandle)
+          this.timeoutHandle = null
+        }
+        resolve(result)
+      }
 
       this.ptyProcess = spawn(shell, shellArgs, {
         name: 'xterm-color',
         cols: 120,
         rows: 40,
         cwd: workdir,
-        env: { ...(process.env as Record<string, string>) },
+        env: { ...toolEnv(), ...extraEnv },
       })
 
       this.ptyProcess.onData((data) => {
@@ -59,7 +90,7 @@ export abstract class BaseDriver {
 
       this.ptyProcess.onExit(({ exitCode }) => {
         const parsed = this.parseResult(this.rawOutput)
-        resolve({
+        finish({
           status: exitCode === 0 ? 'success' : 'failed',
           summary: parsed.summary || (exitCode === 0 ? 'Task completed.' : `Process exited with code ${exitCode}`),
           raw: this.rawOutput,
@@ -67,60 +98,98 @@ export abstract class BaseDriver {
           cost: parsed.cost,
         })
       })
+
+      if (timeoutMs > 0) {
+        this.timeoutHandle = setTimeout(() => {
+          this.cancel(jobId)
+          finish({
+            status: 'failed',
+            summary: `Timed out after ${Math.round(timeoutMs / 60000)} minutes.`,
+            raw: this.rawOutput,
+          })
+        }, timeoutMs)
+      }
     })
 
     return { jobId, promise }
   }
 
+  write(data: string): boolean {
+    if (!this.ptyProcess) return false
+    try {
+      this.ptyProcess.write(data)
+      return true
+    } catch {
+      return false
+    }
+  }
+
   cancel(_jobId: string): void {
+    if (this.timeoutHandle) {
+      clearTimeout(this.timeoutHandle)
+      this.timeoutHandle = null
+    }
     if (this.ptyProcess) {
-      this.ptyProcess.kill()
+      try {
+        this.ptyProcess.kill()
+      } catch {
+        /* already exited */
+      }
       this.ptyProcess = null
     }
   }
 }
 
-// ─── Claude Code ────────────────────────────────────────────────────────────
 export class ClaudeCodeDriver extends BaseDriver {
   getCommandAndArgs(task: string) {
-    return { command: 'claude', args: ['-p', `"${task}"`, '--output-format', 'json'] }
+    return { command: 'claude', args: ['-p', task] }
   }
   protected parseResult(raw: string): Partial<TaskResult> {
     try {
-      const json = JSON.parse(raw.trim().split('\n').filter(l => l.startsWith('{')).join(''))
+      const json = JSON.parse(raw.trim().split('\n').filter((l) => l.startsWith('{')).join(''))
       return {
         summary: json.result || json.summary || 'Done',
         tokenCount: json.usage?.input_tokens,
         cost: json.usage?.input_tokens ? json.usage.input_tokens * 0.000003 : 0,
       }
-    } catch { return {} }
+    } catch {
+      return {}
+    }
   }
 }
 
-// ─── Codex ──────────────────────────────────────────────────────────────────
 export class CodexDriver extends BaseDriver {
-  getCommandAndArgs(task: string) {
-    return { command: 'codex', args: ['exec', `"${task}"`, '--full-auto'] }
+  getCommandAndArgs(task: string, options?: DriverOptions) {
+    const args = ['exec', task]
+    if (!options?.approvalMode) {
+      args.push('--full-auto')
+    }
+    return { command: 'codex', args }
   }
 }
 
-// ─── Antigravity ─────────────────────────────────────────────────────────────
 export class AntigravityDriver extends BaseDriver {
   getCommandAndArgs(task: string) {
-    return { command: 'agy', args: ['-p', `"${task}"`, '--output-format', 'json'] }
+    return { command: 'agy', args: ['-p', task] }
   }
   protected parseResult(raw: string): Partial<TaskResult> {
     if (raw.includes('Authentication required') || raw.includes('not logged in')) {
-      return { summary: '⚠️ Auth error: run `agy login` first', status: 'failed' as const }
+      return { summary: 'Auth error: run `agy login` first', status: 'failed' as const }
     }
     return {}
   }
 }
 
-// ─── Aider ───────────────────────────────────────────────────────────────────
 export class AiderDriver extends BaseDriver {
-  getCommandAndArgs(task: string) {
-    return { command: 'aider', args: ['--message', `"${task}"`, '--yes', '--no-auto-commits'] }
+  getCommandAndArgs(task: string, options?: DriverOptions) {
+    const args = ['--message', task, '--no-auto-commits']
+    if (!options?.approvalMode) {
+      args.push('--yes')
+    }
+    if (options?.model) {
+      args.push('--model', options.model)
+    }
+    return { command: 'aider', args }
   }
   protected parseResult(raw: string): Partial<TaskResult> {
     const tokenMatch = raw.match(/Tokens:\s*([\d,]+)\s*sent/i)
@@ -132,52 +201,65 @@ export class AiderDriver extends BaseDriver {
   }
 }
 
-// ─── OpenCode ────────────────────────────────────────────────────────────────
 export class OpenCodeDriver extends BaseDriver {
-  getCommandAndArgs(task: string) {
-    return { command: 'opencode', args: ['run', `"${task}"`, '--yes'] }
+  getCommandAndArgs(task: string, options?: DriverOptions) {
+    const args = ['run', task]
+    if (!options?.approvalMode) {
+      args.push('--auto')
+    }
+    if (options?.model) {
+      args.push('--model', options.model)
+    }
+    return { command: 'opencode', args }
   }
 }
 
-// ─── Cursor ──────────────────────────────────────────────────────────────────
 export class CursorDriver extends BaseDriver {
   getCommandAndArgs(task: string) {
-    return { command: 'cursor', args: ['--task', `"${task}"`, '--headless'] }
+    return { command: 'agent', args: ['-p', task, '--force'] }
   }
 }
 
-// ─── GitHub Copilot ────────────────────────────────────────────────────────────
 export class GithubCopilotDriver extends BaseDriver {
   getCommandAndArgs(task: string) {
-    return { command: 'gh', args: ['api', 'copilot/chat', '-f', `message="${task}"`, '--method', 'POST'] }
+    return { command: 'gh', args: ['copilot', 'suggest', '-t', 'shell', task] }
   }
   protected parseResult(raw: string): Partial<TaskResult> {
     try {
-      const json = JSON.parse(raw.trim().split('\n').filter(l => l.startsWith('{')).join(''))
+      const json = JSON.parse(raw.trim().split('\n').filter((l) => l.startsWith('{')).join(''))
       return { summary: json.content || json.message || 'Done' }
-    } catch { return {} }
+    } catch {
+      return { summary: raw.trim().slice(-400) || 'Done' }
+    }
   }
 }
 
-// ─── Dummy (fallback / test) ──────────────────────────────────────────────────
 export class DummyDriver extends BaseDriver {
   getCommandAndArgs(task: string) {
-    return { command: 'echo', args: [`"[Robent] Running: ${task.substring(0, 80)}..."`] }
+    return { command: 'echo', args: [`[Robent] Running: ${task.substring(0, 80)}...`] }
   }
 }
 
-// ─── Factory ──────────────────────────────────────────────────────────────────
 export function createDriver(agentName: string): BaseDriver {
   switch (agentName?.toLowerCase().replace(/\s+/g, '-')) {
     case 'claude-code':
-    case 'claude code': return new ClaudeCodeDriver()
-    case 'codex': return new CodexDriver()
-    case 'antigravity': return new AntigravityDriver()
-    case 'aider': return new AiderDriver()
-    case 'opencode': return new OpenCodeDriver()
-    case 'cursor': return new CursorDriver()
+    case 'claude':
+      return new ClaudeCodeDriver()
+    case 'codex':
+      return new CodexDriver()
+    case 'antigravity':
+    case 'agy':
+      return new AntigravityDriver()
+    case 'aider':
+      return new AiderDriver()
+    case 'opencode':
+      return new OpenCodeDriver()
+    case 'cursor':
+      return new CursorDriver()
+    case 'github-copilot':
     case 'github copilot':
-    case 'github-copilot': return new GithubCopilotDriver()
-    default: return new DummyDriver()
+      return new GithubCopilotDriver()
+    default:
+      return new DummyDriver()
   }
 }

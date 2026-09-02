@@ -1,14 +1,17 @@
 import { execa } from 'execa'
-import { spawn } from 'node-pty'
+import { spawn, type IPty } from 'node-pty'
 import * as os from 'os'
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { safeStorage } from 'electron'
 import { getDb, getToolSecret, getToolStatuses, upsertToolSecret, upsertToolStatus } from './db.js'
 
+/** Active PTY handles so the renderer can send stdin during interactive auth. */
+const activeToolPtySessions = new Map<string, IPty>()
+
 export type ToolId = 'claude-code' | 'codex' | 'antigravity' | 'aider' | 'opencode'
 export type ToolStatus = 'not-installed' | 'installed-not-signed-in' | 'ready'
-export type ToolActionKind = 'install' | 'auth'
+export type ToolActionKind = 'install' | 'auth' | 'terminal'
 
 export interface ToolDefinition {
   id: ToolId
@@ -96,19 +99,30 @@ export const TOOL_DEFINITIONS: Record<ToolId, ToolDefinition> = {
     name: 'OpenCode',
     binary: 'opencode',
     versionFlag: '--version',
-    installCommand: 'npm install -g opencode',
+    installCommand: 'npm install -g opencode-ai',
     authCommand: 'opencode',
-    authArgs: ['auth', 'login'],
+    authArgs: ['providers', 'login'],
     authProbeCommand: 'opencode',
-    authProbeArgs: ['auth', 'list'],
-    authProbeStrict: true,
-    authSuccessPatterns: [/ready/i, /authenticated/i, /signed in/i, /logged in/i, /connected/i, /provider/i, /ok/i],
+    authProbeArgs: ['providers', 'list'],
+    authProbeStrict: false,
+    authSuccessPatterns: [/credentials/i, /\d+\s*credentials/i, /provider/i, /ready/i, /authenticated/i, /signed in/i, /logged in/i, /connected/i, /ok/i],
     authErrorPatterns: [/authentication required/i, /not logged in/i, /login required/i, /no credentials/i, /unauthorized/i, /401/i],
     capability: 'general-purpose planning and fallback work',
   },
 }
 
 export const TOOL_IDS = Object.keys(TOOL_DEFINITIONS) as ToolId[]
+
+/** True when the tool has an interactive/API auth path (not "install-only ready"). */
+export function toolSupportsAuth(toolId: ToolId): boolean {
+  if (toolId === 'aider') return true
+  const def = TOOL_DEFINITIONS[toolId]
+  return Boolean(def?.authCommand)
+}
+
+export function getAuthCapableToolIds(): ToolId[] {
+  return TOOL_IDS.filter(toolSupportsAuth)
+}
 
 function shellQuote(value: string): string {
   if (/^[A-Za-z0-9_\-./:@=]+$/.test(value)) return value
@@ -126,10 +140,14 @@ function existingDirs(paths: string[]): string[] {
 function pythonScriptDirs(root?: string): string[] {
   if (!root || !existsSync(root)) return []
   try {
-    return readdirSync(root, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && /^Python\d+/i.test(entry.name))
-      .map((entry) => join(root, entry.name, 'Scripts'))
-      .filter((candidate) => existsSync(candidate))
+    const dirs: string[] = []
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (entry.isDirectory() && /^Python\d+/i.test(entry.name)) {
+        dirs.push(join(root, entry.name))
+        dirs.push(join(root, entry.name, 'Scripts'))
+      }
+    }
+    return dirs.filter((candidate) => existsSync(candidate))
   } catch {
     return []
   }
@@ -150,7 +168,7 @@ function normalizeWindowsCommandLine(commandLine: string): string {
  * npm/node locations to every probe and action without mutating the process
  * environment globally.
  */
-function toolEnv(): Record<string, string> {
+export function toolEnv(): Record<string, string> {
   const env = { ...(process.env as Record<string, string>) }
   if (os.platform() !== 'win32') return env
   const userProfile = process.env.USERPROFILE || os.homedir()
@@ -169,8 +187,10 @@ function toolEnv(): Record<string, string> {
   ].filter(Boolean)
   const current = (env.PATH || env.Path || '').split(';').filter(Boolean)
   const merged = [...new Set([...current, ...existingDirs(candidates)])]
+  // Remove all PATH casings to avoid duplicate keys corrupting child process env
+  delete env.Path
+  delete env.path
   env.PATH = merged.join(';')
-  env.Path = env.PATH
   return env
 }
 
@@ -219,10 +239,18 @@ function runShellCommand(commandLine: string, workdir: string, onOutput: (chunk:
 
 export async function detectTool(binary: string, versionFlag: string): Promise<{ installed: boolean; version: string | null; details?: string | null }> {
   try {
-    const result = await captureShellCommand(shellCommandLine(binary, [versionFlag]), 10000)
-    const version = (result.stdout || result.stderr || '').trim() || null
-    // A shell can return stderr for a failed command (for example, "not
-    // recognized"), so output alone is not proof that the CLI is installed.
+    let result = await captureShellCommand(shellCommandLine(binary, [versionFlag]), 10000)
+    let version = (result.stdout || result.stderr || '').trim() || null
+
+    if (result.exitCode !== 0 && binary === 'opencode') {
+      const fallbackCmd = os.platform() === 'win32' ? 'npx.cmd opencode --version' : 'npx opencode --version'
+      const fallbackResult = await captureShellCommand(fallbackCmd, 10000)
+      if (fallbackResult.exitCode === 0) {
+        result = fallbackResult
+        version = (fallbackResult.stdout || fallbackResult.stderr || '').trim() || null
+      }
+    }
+
     if (result.exitCode === 0) {
       return { installed: true, version }
     }
@@ -262,6 +290,28 @@ async function detectAuth(tool: ToolDefinition, installed: boolean): Promise<{ s
 
   if (!tool.authCommand || !tool.authArgs) {
     return { status: 'ready', details: 'CLI is installed.' }
+  }
+
+  if (tool.id === 'opencode') {
+    const home = process.env.USERPROFILE || os.homedir()
+    const configCandidates = [
+      join(home, '.local', 'share', 'opencode', 'auth.json'),
+      process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'opencode', 'auth.json') : '',
+      process.env.APPDATA ? join(process.env.APPDATA, 'opencode', 'auth.json') : '',
+    ].filter(Boolean)
+
+    for (const file of configCandidates) {
+      if (existsSync(file)) {
+        try {
+          const content = readFileSync(file, 'utf8')
+          if (content.length > 5 && !content.includes('"credentials": {}')) {
+            return { status: 'ready', details: `Authenticated via config file: ${file}` }
+          }
+        } catch {
+          /* pass */
+        }
+      }
+    }
   }
 
   try {
@@ -309,6 +359,8 @@ export async function refreshToolStatuses(): Promise<ToolSnapshot[]> {
       details: auth.details || detected.details || null,
       lastCheckedAt: new Date().toISOString(),
     }
+
+    console.log(`[Tool Detection Regression Log] ${snapshot.name} (${snapshot.toolId}) => status: ${snapshot.authStatus} | raw details: ${JSON.stringify(snapshot.details)}`)
 
     upsertToolStatus({
       toolId: snapshot.toolId,
@@ -373,6 +425,28 @@ export interface ToolActionResult {
   promise: Promise<{ exitCode: number; rawOutput: string }>
 }
 
+export function writeToolSessionInput(sessionId: string, data: string): boolean {
+  const pty = activeToolPtySessions.get(sessionId)
+  if (!pty) return false
+  try {
+    pty.write(data)
+    return true
+  } catch {
+    return false
+  }
+}
+
+export function killToolSession(sessionId: string): boolean {
+  const pty = activeToolPtySessions.get(sessionId)
+  if (!pty) return false
+  try {
+    pty.kill()
+    return true
+  } catch {
+    return false
+  }
+}
+
 export function runToolAction(
   toolId: ToolId,
   kind: ToolActionKind,
@@ -386,6 +460,8 @@ export function runToolAction(
   let commandLine = ''
   if (kind === 'install') {
     commandLine = normalizeWindowsCommandLine(def.installCommand)
+  } else if (kind === 'terminal') {
+    commandLine = def.binary
   } else if (toolId === 'aider') {
     if (secret) saveToolSecret(toolId, 'Aider API key', secret)
     commandLine = 'echo Aider API key saved.'
@@ -395,14 +471,19 @@ export function runToolAction(
     commandLine = shellCommandLine(loginCommand, loginArgs)
   }
 
-  const { promise } = runShellCommand(commandLine, process.cwd(), (chunk) => {
+  const { ptyProcess, promise } = runShellCommand(commandLine, process.cwd(), (chunk) => {
     onOutput(chunk)
     if (onSuccessSignal && hasAnyPattern(chunk, def.authSuccessPatterns)) {
       onSuccessSignal(chunk)
     }
   })
 
-  return { sessionId, promise }
+  activeToolPtySessions.set(sessionId, ptyProcess)
+  const tracked = promise.finally(() => {
+    activeToolPtySessions.delete(sessionId)
+  })
+
+  return { sessionId, promise: tracked }
 }
 
 export function syncAgentProfiles(statuses: ToolSnapshot[]): void {

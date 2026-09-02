@@ -12,6 +12,10 @@ export default function Header() {
   const projects = useFleetStore((s) => s.projects)
   const currentProject = useFleetStore((s) => s.currentProject)
   const setActiveProject = useFleetStore((s) => s.setActiveProject)
+  const setShowProjectSetupModal = useFleetStore((s) => s.setShowProjectSetupModal)
+  const setCurrentPage = useFleetStore((s) => s.setCurrentPage)
+  const showWorkerPanel = useFleetStore((s) => s.showWorkerPanel)
+  const setShowWorkerPanel = useFleetStore((s) => s.setShowWorkerPanel)
   const runningCount = workers.filter(w => w.status === 'running').length
   const totalTokens = tasks.reduce((acc, t) => acc + (t.tokenCount || 0), 0)
   const totalCost = tasks.reduce((acc, t) => acc + (t.estimatedCost || 0), 0)
@@ -41,7 +45,7 @@ export default function Header() {
           onClick={() => setShowProjectPicker(!showProjectPicker)}
           className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg hover:bg-[#141418] transition-colors group"
         >
-          <FolderOpen className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+          <FolderOpen className="w-3.5 h-3.5 text-sky-400 shrink-0" />
           <span className="text-zinc-300 font-medium max-w-[180px] truncate">{projectName}</span>
           {projectPath && <span className="text-zinc-600 hidden md:inline truncate max-w-[120px]">· {projectPath.split(/[\\/]/).pop()}</span>}
           <ChevronDown className="w-3 h-3 text-zinc-600 group-hover:text-zinc-400 transition-colors" />
@@ -49,27 +53,55 @@ export default function Header() {
 
         {showProjectPicker && (
           <div className="absolute top-full left-0 mt-1 w-72 bg-[#111114] border border-[#2a2a32] rounded-xl shadow-2xl z-50 overflow-hidden">
-            <div className="px-3 py-2 border-b border-[#1e1e24]">
+            <div className="px-3 py-2 border-b border-[#1e1e24] flex items-center justify-between">
               <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest">Switch Project</p>
+              <button
+                onClick={() => { setShowProjectPicker(false); setCurrentPage('projects') }}
+                className="text-[10px] text-zinc-500 hover:text-zinc-300"
+              >
+                Manage
+              </button>
             </div>
             {projects.length === 0 ? (
-              <div className="px-4 py-4 text-xs text-zinc-600 text-center">No projects — add one in Projects</div>
+              <div className="px-3 py-3 space-y-2">
+                <p className="text-xs text-zinc-500 text-center">No projects yet</p>
+                <button
+                  onClick={() => {
+                    setShowProjectPicker(false)
+                    setShowProjectSetupModal(true)
+                  }}
+                  className="w-full text-xs font-semibold px-3 py-2 rounded-lg bg-sky-500 hover:bg-sky-400 text-zinc-950 transition-colors"
+                >
+                  Add or create project
+                </button>
+              </div>
             ) : (
               <div className="py-1">
                 {projects.map(p => (
                   <button
                     key={p.id}
                     onClick={() => { setActiveProject(p.id); setShowProjectPicker(false) }}
-                    className={`w-full text-left px-3 py-2.5 flex items-center gap-2.5 hover:bg-[#1a1a22] transition-colors ${p.isActive ? 'bg-purple-950/20' : ''}`}
+                    className={`w-full text-left px-3 py-2.5 flex items-center gap-2.5 hover:bg-[#1a1a22] transition-colors ${p.isActive ? 'bg-sky-950/20' : ''}`}
                   >
-                    <FolderOpen className={`w-3.5 h-3.5 shrink-0 ${p.isActive ? 'text-purple-400' : 'text-zinc-600'}`} />
+                    <FolderOpen className={`w-3.5 h-3.5 shrink-0 ${p.isActive ? 'text-sky-400' : 'text-zinc-600'}`} />
                     <div className="min-w-0">
-                      <div className={`text-xs font-semibold truncate ${p.isActive ? 'text-purple-300' : 'text-zinc-300'}`}>{p.name}</div>
+                      <div className={`text-xs font-semibold truncate ${p.isActive ? 'text-sky-300' : 'text-zinc-300'}`}>{p.name}</div>
                       <div className="text-[10px] text-zinc-600 font-mono truncate">{p.path}</div>
                     </div>
-                    {p.isActive && <span className="ml-auto text-[9px] text-purple-400 font-bold uppercase tracking-wider shrink-0">Active</span>}
+                    {p.isActive && <span className="ml-auto text-[9px] text-sky-400 font-bold uppercase tracking-wider shrink-0">Active</span>}
                   </button>
                 ))}
+                <div className="border-t border-[#1e1e24] mt-1 pt-1 px-2 pb-2">
+                  <button
+                    onClick={() => {
+                      setShowProjectPicker(false)
+                      setShowProjectSetupModal(true)
+                    }}
+                    className="w-full text-left text-[11px] text-zinc-400 hover:text-white px-2 py-1.5 rounded-lg hover:bg-[#1a1a22] transition-colors"
+                  >
+                    + Add or create project
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -91,10 +123,14 @@ export default function Header() {
 
         {/* Running badge */}
         {runningCount > 0 && (
-          <div className="flex items-center gap-1.5 bg-emerald-950/50 border border-emerald-800/50 rounded-md px-2.5 py-1 text-[11px] text-emerald-400">
+          <button
+            onClick={() => setShowWorkerPanel(!showWorkerPanel)}
+            className="flex items-center gap-1.5 bg-emerald-950/50 border border-emerald-800/50 rounded-md px-2.5 py-1 text-[11px] text-emerald-400 hover:bg-emerald-900/60 transition-colors cursor-pointer"
+            title="Toggle Worker Panel"
+          >
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
             {runningCount} running
-          </div>
+          </button>
         )}
 
         {/* Approval mode toggle */}

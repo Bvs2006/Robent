@@ -7,22 +7,29 @@ import Dashboard from './pages/Dashboard'
 import Sessions from './pages/Sessions'
 import Settings from './pages/Settings'
 import Projects from './pages/Projects'
+import Worktrees from './pages/Worktrees'
+import PullRequests from './pages/PullRequests'
 import TerminalView from './components/terminal/TerminalView'
-import RaceModeView from './components/race/RaceModeView'
 import DiffViewer from './components/diff/DiffViewer'
 import NewTaskModal from './components/common/NewTaskModal'
+import ProjectSetupModal from './components/common/ProjectSetupModal'
 import CommandPalette from './components/common/CommandPalette'
 import NotificationToast from './components/common/NotificationToast'
 import ToolSetupChecklist from './components/setup/ToolSetupChecklist'
+import OrchestratorAuthPanel from './components/setup/OrchestratorAuthPanel'
+import WorkerPanel from './components/workers/WorkerPanel'
 
 function App() {
   // Read stable primitives only — these change rarely, don't trigger frame-level re-renders
   const currentPage    = useFleetStore((s) => s.currentPage)
   const terminalTaskId = useFleetStore((s) => s.terminalTaskId)
-  const raceTaskId     = useFleetStore((s) => s.raceTaskId)
   const diffTaskId     = useFleetStore((s) => s.diffTaskId)
   const showNewTaskModal   = useFleetStore((s) => s.showNewTaskModal)
+  const showProjectSetupModal = useFleetStore((s) => s.showProjectSetupModal)
   const showCommandPalette = useFleetStore((s) => s.showCommandPalette)
+  const showWorkerPanel    = useFleetStore((s) => s.showWorkerPanel)
+  const showOrchestrator   = useFleetStore((s) => s.showOrchestrator)
+  const showToolSetupModal = useFleetStore((s) => s.showToolSetupModal)
   const toolSetupCompleted = useFleetStore((s) => s.toolSetupCompleted)
   const [isBootstrapping, setIsBootstrapping] = useState(true)
 
@@ -41,21 +48,21 @@ function App() {
       .catch((err) => console.error('Initial load failed:', err))
       .finally(() => setIsBootstrapping(false))
 
-    if (window.electronAPI) {
-      // state-changed = real event (task start/finish/cancel/merge)
-      // → debounced full reload from DB
-      window.electronAPI.onStateChanged(() => scheduleRefresh.current())
+    let unsubStateChanged: (() => void) | undefined
+    let unsubTaskDone: (() => void) | undefined
+    let unsubRuntimeTick: (() => void) | undefined
+    let unsubToolStatuses: (() => void) | undefined
+    let unsubPreviewReady: (() => void) | undefined
 
-      // task-done → immediate full refresh (task moved to review/done)
-      window.electronAPI.onTaskDone(() => {
+    if (window.electronAPI) {
+      unsubStateChanged = window.electronAPI.onStateChanged(() => scheduleRefresh.current())
+
+      unsubTaskDone = window.electronAPI.onTaskDone(() => {
         if (refreshTimer.current) clearTimeout(refreshTimer.current)
         useFleetStore.getState().refreshAll()
       })
 
-      // runtime-tick → patch runtime counters IN-PLACE with no IPC round-trip
-      // This is the fix for the blinking/page-reset: runtime updates no longer
-      // touch currentPage or cause full re-renders.
-      window.electronAPI.onRuntimeTick((runtimes: Record<string, number>) => {
+      unsubRuntimeTick = window.electronAPI.onRuntimeTick((runtimes: Record<string, number>) => {
         useFleetStore.setState((s) => ({
           tasks: s.tasks.map((t) =>
             runtimes[t.id] !== undefined
@@ -68,6 +75,17 @@ function App() {
               : w
           ),
         }))
+      })
+
+      unsubToolStatuses = window.electronAPI.onToolStatusesChanged((statuses) => {
+        useFleetStore.setState({ toolStatuses: statuses })
+      })
+
+      unsubPreviewReady = window.electronAPI.onPreviewReady((taskId, port) => {
+        useFleetStore.setState((s) => ({
+          previewPorts: { ...s.previewPorts, [taskId]: port },
+        }))
+        useFleetStore.getState().addNotification('success', `Preview ready on localhost:${port}`)
       })
     }
 
@@ -85,22 +103,25 @@ function App() {
     return () => {
       window.removeEventListener('keydown', onKey)
       if (refreshTimer.current) clearTimeout(refreshTimer.current)
-      window.electronAPI?.removeAllListeners('state-changed')
-      window.electronAPI?.removeAllListeners('task-done')
-      window.electronAPI?.removeAllListeners('runtime-tick')
+      unsubStateChanged?.()
+      unsubTaskDone?.()
+      unsubRuntimeTick?.()
+      unsubToolStatuses?.()
+      unsubPreviewReady?.()
     }
   }, [])
 
   // Determine main content — derived from stable store slices, no unnecessary deps
   const renderMain = () => {
     if (terminalTaskId) return <TerminalView />
-    if (raceTaskId)     return <RaceModeView />
     if (diffTaskId)     return <DiffViewer />
     switch (currentPage) {
-      case 'sessions':  return <Sessions />
-      case 'projects':  return <Projects />
-      case 'settings':  return <Settings />
-      default:          return <Dashboard />
+      case 'sessions':      return <Sessions />
+      case 'projects':      return <Projects />
+      case 'worktrees':     return <Worktrees />
+      case 'pullRequests':  return <PullRequests />
+      case 'settings':      return <Settings />
+      default:              return <Dashboard />
     }
   }
 
@@ -115,23 +136,38 @@ function App() {
       </div>
 
       {showNewTaskModal    && <NewTaskModal />}
+      {showProjectSetupModal && <ProjectSetupModal />}
       {showCommandPalette  && <CommandPalette />}
+      {showOrchestrator    && <OrchestratorAuthPanel />}
+      {showWorkerPanel     && (
+        <div className="fixed top-12 right-4 z-50">
+          <WorkerPanel />
+        </div>
+      )}
 
-      {/* Tool Setup Overlay — only shown once, never re-mounts from runtime ticks */}
-      {!isBootstrapping && !toolSetupCompleted && (
+      {/* Tool Setup Overlay */}
+      {((!isBootstrapping && !toolSetupCompleted) || showToolSetupModal) && !showOrchestrator && (
         <div className="fixed inset-0 z-[60] bg-black/70 backdrop-blur-sm overflow-y-auto">
           <div className="mx-auto max-w-5xl px-4 py-10">
             <div className="relative rounded-3xl border border-[#1d1d24] bg-[#0b0b0d] shadow-2xl p-5 md:p-6">
               <button
-                onClick={() => useFleetStore.getState().setToolSetupCompleted(true)}
+                onClick={() => {
+                  useFleetStore.getState().setShowToolSetupModal(false)
+                  if (!toolSetupCompleted) {
+                    void useFleetStore.getState().setToolSetupCompleted(true)
+                  }
+                }}
                 className="absolute right-5 top-5 rounded-full p-2 text-zinc-500 hover:bg-[#1a1a20] hover:text-white transition-colors"
-                title="Dismiss setup"
+                title="Close setup"
               >
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                 </svg>
               </button>
-              <ToolSetupChecklist variant="setup" />
+              <ToolSetupChecklist
+                variant={showToolSetupModal ? 'settings' : 'setup'}
+                onClose={() => useFleetStore.getState().setShowToolSetupModal(false)}
+              />
             </div>
           </div>
         </div>

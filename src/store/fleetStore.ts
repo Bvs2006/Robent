@@ -5,12 +5,43 @@
  * No mock fallbacks — this runs only in Electron context.
  */
 import { create } from 'zustand'
-import type { Task, Worker, ActivityItem, Notification, PageId, McpServer, Credential, Skill, RaceEntry, AgentName, Settings, Plugin, Project, ToolStatusRecord } from '../types'
+import type { Task, Worker, ActivityItem, Notification, PageId, McpServer, Credential, Skill, AgentName, Settings, Plugin, Project, ToolStatusRecord, ExecutionMode, Hook } from '../types'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 const ipc = window.electronAPI
+let commandApprovalListenerBound = false
 
 function dbRowToTask(row: any): Task {
+  let failedTests: string[] | undefined
+  if (row.failed_tests) {
+    try {
+      const parsed = JSON.parse(row.failed_tests)
+      failedTests = Array.isArray(parsed) ? parsed.map(String) : [String(row.failed_tests)]
+    } catch {
+      failedTests = [String(row.failed_tests)]
+    }
+  }
+
+  let customAgentPool: AgentName[] | undefined
+  if (row.custom_agent_pool) {
+    try {
+      const parsed = JSON.parse(row.custom_agent_pool)
+      if (Array.isArray(parsed)) customAgentPool = parsed
+    } catch {
+      /* pass */
+    }
+  }
+
+  let subtasks: any[] | undefined
+  if (row.subtasks) {
+    try {
+      const parsed = JSON.parse(row.subtasks)
+      if (Array.isArray(parsed)) subtasks = parsed
+    } catch {
+      /* pass */
+    }
+  }
+
   return {
     id: row.id,
     title: row.title,
@@ -28,6 +59,15 @@ function dbRowToTask(row: any): Task {
     tokenCount: row.token_count || 0,
     estimatedCost: row.estimated_cost || 0,
     diff: row.diff || undefined,
+    changes: row.changes || 0,
+    failedTests,
+    subStatus: row.sub_status || undefined,
+    executionMode: (row.execution_mode as any) || 'auto',
+    customAgentPool,
+    subtasks,
+    isBlocked: row.is_blocked === 1,
+    blockedReason: row.blocked_reason || undefined,
+    planApproved: row.plan_approved === 1,
   }
 }
 
@@ -79,7 +119,7 @@ function taskToWorktree(task: Task) {
     branch: task.branch,
     path: task.worktree,
     status: task.status === 'done' ? 'clean' : 'active' as const,
-    changes: 0,
+    changes: task.changes || 0,
   }
 }
 
@@ -95,6 +135,8 @@ interface FleetState {
   selectTask: (id: string | null) => void
   loadTasks: () => Promise<void>
   createTask: (title: string, desc: string, agent: AgentName, priority: Task['priority']) => Promise<Task>
+  deleteTask: (taskId: string) => Promise<void>
+  clearPlannedTasks: () => Promise<void>
   startTask: (taskId: string, workdir?: string) => Promise<void>
   stopTask: (taskId: string) => Promise<void>
   mergeTask: (taskId: string) => Promise<void>
@@ -103,6 +145,9 @@ interface FleetState {
   addPlannedTasks: (tasks: Task[]) => Promise<void>
   startAllTasks: (taskIds: string[]) => Promise<void>
   sendAgentFeedback: (taskId: string) => Promise<void>
+  createWorktree: (branchName: string, baseBranch?: string) => Promise<void>
+  setTaskExecutionMode: (taskId: string, mode: ExecutionMode) => Promise<void>
+  setTaskCustomPool: (taskId: string, pool: AgentName[]) => Promise<void>
 
    // Preview server
   startPreviewServer: (taskId: string) => Promise<{ port: number; starting?: boolean } | { error: string }>
@@ -131,12 +176,6 @@ interface FleetState {
   openTerminal: (taskId: string) => void
   closeTerminal: () => void
 
-  // Race Mode
-  raceTaskId: string | null
-  raceEntries: Record<string, RaceEntry>
-  startRace: (taskId: string, agents: AgentName[], workdir?: string) => Promise<void>
-  closeRace: () => void
-
   // Diff viewer
   diffTaskId: string | null
   openDiff: (taskId: string) => void
@@ -152,6 +191,7 @@ interface FleetState {
   mcpServers: McpServer[]
   loadMcpServers: () => Promise<void>
   addMcpServer: (s: { name: string; command: string; args: string; env: string }) => Promise<void>
+  updateMcpServer: (id: string, fields: Partial<McpServer>) => Promise<void>
   deleteMcpServer: (id: string) => Promise<void>
 
   // Credentials
@@ -160,10 +200,26 @@ interface FleetState {
   addCredential: (c: { agent: string; label: string; secret: string }) => Promise<void>
   deleteCredential: (id: string) => Promise<void>
 
+  // Hooks
+  hooks: Hook[]
+  loadHooks: () => Promise<void>
+  addHook: (hook: Omit<Hook, 'id'>) => Promise<void>
+  updateHook: (id: string, fields: Partial<Hook>) => Promise<void>
+  deleteHook: (id: string) => Promise<void>
+  toggleHook: (id: string, enabled: boolean) => Promise<void>
+  testHookCommand: (command: string) => Promise<{ ok: boolean; exitCode: number; output: string }>
+
+  // Plan & Command Approval
+  approvePlan: (taskId: string) => Promise<void>
+  updateSubtaskAgent: (taskId: string, subtaskId: string, agent: AgentName) => Promise<void>
+  respondCommandApproval: (taskId: string, promptId: string, approve: boolean) => Promise<void>
+  pendingCommandApprovals: Record<string, { promptId: string; command: string }>
+
   // Skills
   skills: Skill[]
   loadSkills: () => Promise<void>
   addSkill: (s: { name: string; content: string }) => Promise<void>
+  updateSkill: (id: string, fields: Partial<Skill>) => Promise<void>
   deleteSkill: (id: string) => Promise<void>
 
    // Settings
@@ -187,7 +243,14 @@ interface FleetState {
   projects: Project[]
   currentProject: Project | null
   loadProjects: () => Promise<void>
-  addProject: (p: { name: string; path: string; gitRemote?: string }) => Promise<void>
+  addProject: (p: {
+    name: string
+    path: string
+    gitRemote?: string
+    createIfMissing?: boolean
+    gitInit?: boolean
+    setActive?: boolean
+  }) => Promise<boolean>
   deleteProject: (id: string) => Promise<void>
   setActiveProject: (id: string) => Promise<void>
 
@@ -201,6 +264,13 @@ interface FleetState {
   setShowNewTaskModal: (v: boolean) => void
   showCommandPalette: boolean
   setShowCommandPalette: (v: boolean) => void
+  showProjectSetupModal: boolean
+  setShowProjectSetupModal: (v: boolean, pendingTaskIds?: string[] | null) => void
+  pendingStartAfterProject: string[] | null
+  showOrchestrator: boolean
+  setShowOrchestrator: (v: boolean) => void
+  showToolSetupModal: boolean
+  setShowToolSetupModal: (v: boolean) => void
 
   // Bulk
   loadAll: () => Promise<void>
@@ -216,7 +286,11 @@ function newTaskId(prefix = 'TASK'): string {
 export const useFleetStore = create<FleetState>((set, get) => ({
   // Nav
   currentPage: 'dashboard',
-  setCurrentPage: (p) => set({ currentPage: p }),
+  setCurrentPage: (p) => set({
+    currentPage: p,
+    terminalTaskId: null,
+    diffTaskId: null,
+  }),
 
   // Tasks
   tasks: [],
@@ -244,15 +318,54 @@ export const useFleetStore = create<FleetState>((set, get) => ({
     return t
   },
 
+  deleteTask: async (taskId) => {
+    if (!ipc) return
+    const result = await ipc.deleteJob(taskId)
+    if (result?.success === false) {
+      get().addNotification('error', result.error || 'Failed to delete task')
+      return
+    }
+    set((s) => ({
+      tasks: s.tasks.filter((t) => t.id !== taskId),
+      selectedTaskId: s.selectedTaskId === taskId ? null : s.selectedTaskId,
+      terminalTaskId: s.terminalTaskId === taskId ? null : s.terminalTaskId,
+      pullRequests: s.pullRequests.filter((pr) => pr && pr.id !== `pr-${taskId}`),
+      worktrees: s.worktrees.filter((wt) => wt && wt.workerId !== taskId),
+      workers: s.workers.filter((w) => w.taskId !== taskId),
+    }))
+    get().addNotification('info', 'Task deleted')
+    await get().loadActivities()
+  },
+
+  clearPlannedTasks: async () => {
+    if (!ipc) return
+    const planned = get().tasks.filter((t) => t.status === 'planned')
+    if (planned.length === 0) return
+    for (const t of planned) {
+      await ipc.deleteJob(t.id)
+    }
+    await get().refreshAll()
+    get().addNotification('info', `Deleted ${planned.length} planned task${planned.length > 1 ? 's' : ''}`)
+  },
+
   startTask: async (taskId, workdir) => {
     const task = get().tasks.find(t => t.id === taskId)
     if (!task || !ipc) return
 
-    // Use active project directory if available
     const activeProject = get().currentProject
     const effectiveWorkdir = workdir || activeProject?.path || get().projectDirectory || '.'
 
-    // If the task's assigned agent is not installed/ready, reroute to a ready one
+    if (!activeProject && (!workdir || workdir === '.')) {
+      get().addNotification('info', 'Choose a project folder to run this task')
+      get().setShowProjectSetupModal(true, [taskId])
+      return
+    }
+
+    if (get().approvalMode) {
+      const ok = window.confirm(`Start ${task.agent} on "${task.title}"?\n\nWorking directory:\n${effectiveWorkdir}`)
+      if (!ok) return
+    }
+
     const readyStatuses = get().toolStatuses.filter(t => t.available)
     const agentToolIdMap: Record<string, string> = {
       'Claude Code': 'claude-code',
@@ -274,13 +387,21 @@ export const useFleetStore = create<FleetState>((set, get) => ({
       }
       effectiveAgent = (toolIdToAgent[fallbackToolId] || task.agent) as typeof task.agent
       get().addNotification('info', `${task.agent} not available — routing to ${effectiveAgent}`)
-      // Update task agent in DB
       await ipc.updateJob(taskId, { agent: effectiveAgent })
       set(s => ({ tasks: s.tasks.map(t => t.id === taskId ? { ...t, agent: effectiveAgent as typeof t.agent } : t) }))
+    } else if (!agentIsReady && readyStatuses.length === 0) {
+      get().addNotification('error', 'No coding agents are ready. Open Tool Setup first.')
+      get().setShowToolSetupModal(true)
+      return
     }
 
-    await ipc.runTask(taskId, effectiveAgent, effectiveWorkdir)
+    const result = await ipc.runTask(taskId, effectiveAgent, effectiveWorkdir)
+    if (result?.error) {
+      get().addNotification('error', result.error)
+      return
+    }
     get().addNotification('info', `${effectiveAgent} started on "${task.title}"`)
+    get().openTerminal(taskId)
     await get().refreshAll()
   },
 
@@ -311,25 +432,21 @@ export const useFleetStore = create<FleetState>((set, get) => ({
   },
 
   planTasks: async (description) => {
-    const readyStatuses = get().toolStatuses.filter(t => t.available)
-    const availableAgents: AgentName[] = readyStatuses.map(t => {
-      if (t.toolId === 'claude-code') return 'Claude Code'
-      if (t.toolId === 'codex') return 'Codex'
-      if (t.toolId === 'opencode') return 'OpenCode'
-      if (t.toolId === 'antigravity') return 'Antigravity'
-      if (t.toolId === 'aider') return 'Aider'
-      return 'Claude Code'
-    })
-    const agentsList: AgentName[] = availableAgents.length > 0 ? availableAgents : ['Claude Code', 'OpenCode']
-    const pickAgent = (idx: number) => agentsList[idx % agentsList.length]
-
-    const words = description.split(' ').slice(0, 4).join(' ')
-    const subtasks: Task[] = [
-      { id: newTaskId('PHASE'), title: `${words} — Core`, description: `Phase 1 — Core implementation: ${description}`, status: 'planned', priority: 'normal', agent: pickAgent(0) },
-      { id: newTaskId('PHASE'), title: `${words} — UI`, description: `Phase 2 — User interface: ${description}`, status: 'planned', priority: 'normal', agent: pickAgent(1) },
-      { id: newTaskId('PHASE'), title: `${words} — Tests`, description: `Phase 3 — Test suite: ${description}`, status: 'planned', priority: 'low', agent: pickAgent(2) },
-    ]
-    return subtasks
+    if (!ipc) return []
+    const settings = get().settings
+    const mode = settings.defaultExecutionMode || 'auto'
+    const customPool: AgentName[] = [] // Can be updated if a global pool is implemented
+    const subtasks = await ipc.planTask({ description, mode, customPool })
+    return (subtasks || []).map((st: any) => ({
+      id: st.id,
+      title: st.title,
+      description: st.description,
+      status: st.status || 'planned',
+      priority: 'normal',
+      agent: st.assignedAgent || 'Claude Code',
+      rationale: st.rationale,
+      dependencyMode: st.dependencyMode || 'parallel',
+    })) as Task[]
   },
 
   addPlannedTasks: async (tasks) => {
@@ -349,9 +466,47 @@ export const useFleetStore = create<FleetState>((set, get) => ({
 
   sendAgentFeedback: async (taskId) => {
     if (!ipc) return
-    await ipc.updateJob(taskId, { status: 'working', ci_status: 'pending' })
-    get().addNotification('info', 'Feedback sent to agent')
+    const task = get().tasks.find(t => t.id === taskId)
+    if (!task) return
+    const feedback = [
+      task.subStatus,
+      ...(task.failedTests || []),
+      'Please fix the failing checks and complete the original task.',
+    ].filter(Boolean).join('\n')
+    const result = await ipc.retryTask(taskId, feedback)
+    if (result?.error) {
+      get().addNotification('error', result.error)
+      return
+    }
+    get().addNotification('info', 'Feedback sent — agent retrying')
     await get().refreshAll()
+  },
+
+  createWorktree: async (branchName, baseBranch) => {
+    if (!ipc) return
+    const result = await ipc.createWorktree({ branchName, baseBranch })
+    if (result?.error) {
+      get().addNotification('error', result.error)
+      return
+    }
+    get().addNotification('success', `Worktree created: ${branchName}`)
+    await get().refreshAll()
+  },
+
+  setTaskExecutionMode: async (taskId, mode) => {
+    if (!ipc) return
+    await ipc.setTaskExecutionMode(taskId, mode)
+    set((s) => ({
+      tasks: s.tasks.map((t) => (t.id === taskId ? { ...t, executionMode: mode } : t)),
+    }))
+  },
+
+  setTaskCustomPool: async (taskId, pool) => {
+    if (!ipc) return
+    await ipc.setTaskCustomPool(taskId, pool)
+    set((s) => ({
+      tasks: s.tasks.map((t) => (t.id === taskId ? { ...t, customAgentPool: pool } : t)),
+    }))
   },
 
   // Preview server
@@ -362,6 +517,8 @@ export const useFleetStore = create<FleetState>((set, get) => ({
     if (result && result.port) {
       set((s) => ({ previewPorts: { ...s.previewPorts, [taskId]: result.port } }))
       get().addNotification('info', `Preview server running on port ${result.port}`)
+    } else if (result?.error) {
+      get().addNotification('error', `Preview server failed: ${result.error}`)
     }
     return result
   },
@@ -398,6 +555,72 @@ export const useFleetStore = create<FleetState>((set, get) => ({
     await get().loadPlugins()
   },
 
+  // Hooks
+  hooks: [] as Hook[],
+  loadHooks: async () => {
+    if (!ipc) return
+    const rows = await ipc.getHooks()
+    set({ hooks: (rows || []).map((r: any) => ({
+      id: r.id,
+      name: r.name,
+      event: r.event,
+      command: r.command,
+      scope: r.scope || 'global',
+      enabled: (r.enabled ?? r.is_enabled ?? 0) === 1,
+      createdAt: r.created_at || r.createdAt,
+    })) })
+  },
+  addHook: async (hook) => {
+    if (!ipc) return
+    await ipc.addHook(hook)
+    await get().loadHooks()
+    get().addNotification('success', `Hook "${hook.name}" created`)
+  },
+  updateHook: async (id, fields) => {
+    if (!ipc) return
+    await ipc.updateHook(id, fields)
+    await get().loadHooks()
+  },
+  deleteHook: async (id) => {
+    if (!ipc) return
+    await ipc.deleteHook(id)
+    await get().loadHooks()
+    get().addNotification('info', 'Hook deleted')
+  },
+  toggleHook: async (id, enabled) => {
+    if (!ipc) return
+    await ipc.toggleHook(id, enabled)
+    await get().loadHooks()
+  },
+  testHookCommand: async (command) => {
+    if (!ipc) return { ok: false, exitCode: 1, output: 'IPC unavailable' }
+    return ipc.testHookCommand(command)
+  },
+
+  // Plan & Command Approval
+  approvePlan: async (taskId) => {
+    if (!ipc) return
+    await ipc.approvePlan(taskId)
+    get().addNotification('success', 'Plan approved! Starting agent execution...')
+    await get().startTask(taskId)
+  },
+  updateSubtaskAgent: async (taskId, subtaskId, agent) => {
+    if (!ipc) return
+    await ipc.updateSubtaskAgent(taskId, subtaskId, agent)
+    await get().refreshAll()
+  },
+  respondCommandApproval: async (taskId, promptId, approve) => {
+    if (!ipc) return
+    await ipc.respondCommandApproval(taskId, promptId, approve)
+    set((s) => {
+      const next = { ...s.pendingCommandApprovals }
+      delete next[taskId]
+      return { pendingCommandApprovals: next }
+    })
+    get().addNotification(approve ? 'success' : 'warning', approve ? 'Command approved ✓' : 'Command denied ✗')
+  },
+  pendingCommandApprovals: {},
+
   // Workers
   workers: [],
   loadWorkers: async () => {
@@ -418,44 +641,12 @@ export const useFleetStore = create<FleetState>((set, get) => ({
 
   // Terminal
   terminalTaskId: null,
-  openTerminal: (taskId) => set({ terminalTaskId: taskId, raceTaskId: null, diffTaskId: null }),
+  openTerminal: (taskId) => set({ terminalTaskId: taskId, diffTaskId: null }),
   closeTerminal: () => set({ terminalTaskId: null }),
-
-  // Race Mode
-  raceTaskId: null,
-  raceEntries: {},
-  startRace: async (taskId, agents, workdir = '.') => {
-    const entries: Record<string, RaceEntry> = {}
-    for (const agent of agents) {
-      entries[agent] = { agent, status: 'running', output: '' }
-    }
-    set({ raceTaskId: taskId, raceEntries: entries, terminalTaskId: null, diffTaskId: null })
-
-    if (ipc) {
-      ipc.onRaceOutput((tid, agent, chunk) => {
-        if (tid !== taskId) return
-        set((s) => ({
-          raceEntries: { ...s.raceEntries, [agent]: { ...s.raceEntries[agent], output: (s.raceEntries[agent]?.output || '') + chunk } }
-        }))
-      })
-      ipc.onRaceResult((tid, agent, result) => {
-        if (tid !== taskId) return
-        set((s) => ({
-          raceEntries: {
-            ...s.raceEntries,
-            [agent]: { ...s.raceEntries[agent], status: result.status === 'success' ? 'done' : 'failed', summary: result.summary, tokenCount: result.tokenCount, cost: result.cost }
-          }
-        }))
-      })
-      await ipc.runRace(taskId, agents, workdir)
-    }
-    get().addNotification('info', `Race started: ${agents.join(' vs ')}`)
-  },
-  closeRace: () => set({ raceTaskId: null, raceEntries: {} }),
 
   // Diff
   diffTaskId: null,
-  openDiff: (taskId) => set({ diffTaskId: taskId, terminalTaskId: null, raceTaskId: null }),
+  openDiff: (taskId) => set({ diffTaskId: taskId, terminalTaskId: null }),
   closeDiff: () => set({ diffTaskId: null }),
 
   // Derived: Pull Requests
@@ -479,6 +670,11 @@ export const useFleetStore = create<FleetState>((set, get) => ({
   deleteMcpServer: async (id) => {
     if (!ipc) return
     const rows = await ipc.deleteMcpServer(id)
+    set({ mcpServers: rows.map((r: any) => ({ id: r.id, name: r.name, command: r.command, args: r.args, env: r.env, isEnabled: r.is_enabled === 1 })) })
+  },
+  updateMcpServer: async (id, fields) => {
+    if (!ipc) return
+    const rows = await ipc.updateMcpServer(id, fields)
     set({ mcpServers: rows.map((r: any) => ({ id: r.id, name: r.name, command: r.command, args: r.args, env: r.env, isEnabled: r.is_enabled === 1 })) })
   },
 
@@ -531,9 +727,21 @@ export const useFleetStore = create<FleetState>((set, get) => ({
     toolSetupCompleted: false,
   },
   projectDirectory: './my-project',
-  setProjectDirectory: (d) => set((s) => ({ projectDirectory: d, settings: { ...s.settings, projectDirectory: d } })),
+  setProjectDirectory: (d) => {
+    set((s) => ({ projectDirectory: d, settings: { ...s.settings, projectDirectory: d } }))
+    if (ipc) ipc.setSetting('projectDirectory', d)
+  },
   approvalMode: false,
-  setApprovalMode: (v) => set((s) => ({ approvalMode: v, settings: { ...s.settings, approvalMode: v } })),
+  setApprovalMode: (v) => {
+    set((s) => ({ approvalMode: v, settings: { ...s.settings, approvalMode: v } }))
+    if (ipc) ipc.setSetting('approvalMode', String(v))
+  },
+  updateSkill: async (id, fields) => {
+    if (!ipc) return
+    await ipc.updateSkill(id, fields)
+    await get().loadSkills()
+    get().addNotification('success', 'Skill updated')
+  },
   toolStatuses: [],
   toolSetupCompleted: false,
   loadToolStatuses: async () => {
@@ -593,21 +801,30 @@ export const useFleetStore = create<FleetState>((set, get) => ({
     if (!ipc) return
     const rows = await ipc.getProjects()
     const projects = rows.map(dbRowToProject)
-    const active = projects.find(p => p.isActive)
+    const active = projects.find(p => p.isActive) || null
     set({
       projects,
-      ...(active ? { currentProject: active, projectDirectory: active.path } : {}),
+      currentProject: active,
+      ...(active ? { projectDirectory: active.path } : {}),
     })
   },
   addProject: async (p) => {
-    if (!ipc) return
-    const result = await ipc.addProject(p)
+    if (!ipc) return false
+    const result = await ipc.addProject({
+      name: p.name,
+      path: p.path,
+      gitRemote: p.gitRemote,
+      createIfMissing: p.createIfMissing,
+      gitInit: p.gitInit,
+      setActive: p.setActive !== false,
+    })
     if (result?.error) {
       get().addNotification('error', result.error)
-      return
+      return false
     }
     await get().loadProjects()
-    get().addNotification('success', `Project "${p.name}" added`)
+    get().addNotification('success', `Project "${p.name}" ready`)
+    return true
   },
   deleteProject: async (id) => {
     if (!ipc) return
@@ -621,6 +838,7 @@ export const useFleetStore = create<FleetState>((set, get) => ({
     const proj = get().projects.find(p => p.id === id)
     if (proj) {
       set((s) => ({ projectDirectory: proj.path, settings: { ...s.settings, projectDirectory: proj.path } }))
+      await ipc.setSetting('projectDirectory', proj.path)
     }
   },
 
@@ -638,10 +856,31 @@ export const useFleetStore = create<FleetState>((set, get) => ({
   setShowNewTaskModal: (v) => set({ showNewTaskModal: v }),
   showCommandPalette: false,
   setShowCommandPalette: (v) => set({ showCommandPalette: v }),
+  showProjectSetupModal: false,
+  pendingStartAfterProject: null,
+  setShowProjectSetupModal: (v, pendingTaskIds = null) => set({
+    showProjectSetupModal: v,
+    pendingStartAfterProject: v ? (pendingTaskIds ?? null) : null,
+  }),
+  showOrchestrator: false,
+  setShowOrchestrator: (v) => set({ showOrchestrator: v }),
+  showToolSetupModal: false,
+  setShowToolSetupModal: (v) => set({ showToolSetupModal: v }),
 
   // Bulk load
   loadAll: async () => {
-    await Promise.all([get().loadTasks(), get().loadWorkers(), get().loadActivities(), get().loadMcpServers(), get().loadCredentials(), get().loadSkills(), get().loadSettings(), get().loadPlugins(), get().loadProjects(), get().loadToolStatuses(), get().loadToolSetupState()])
+    if (ipc && !commandApprovalListenerBound) {
+      commandApprovalListenerBound = true
+      ipc.onCommandApprovalRequested(({ taskId, promptId, command }) => {
+        set((s) => ({
+          pendingCommandApprovals: {
+            ...s.pendingCommandApprovals,
+            [taskId]: { promptId, command },
+          },
+        }))
+      })
+    }
+    await Promise.all([get().loadTasks(), get().loadWorkers(), get().loadActivities(), get().loadMcpServers(), get().loadCredentials(), get().loadSkills(), get().loadSettings(), get().loadPlugins(), get().loadProjects(), get().loadToolStatuses(), get().loadToolSetupState(), get().loadHooks()])
   },
   refreshAll: async () => {
     if (!ipc) return
@@ -650,7 +889,7 @@ export const useFleetStore = create<FleetState>((set, get) => ({
     ])
     const tasks = taskRows.map(dbRowToTask)
     const projects = projectRows.map(dbRowToProject)
-    const active = projects.find((p: any) => p.isActive)
+    const active = projects.find((p: any) => p.isActive) || null
     set({
       tasks,
       pullRequests: tasks.map(taskToPullRequest).filter(Boolean) as any,
@@ -658,7 +897,8 @@ export const useFleetStore = create<FleetState>((set, get) => ({
       workers: workerRows.map(dbRowToWorker),
       activities: activityRows.map((r: any) => ({ id: r.id, timestamp: r.timestamp, type: r.type, message: r.message, taskId: r.job_id })),
       projects,
-      ...(active ? { currentProject: active, projectDirectory: active.path } : {}),
+      currentProject: active,
+      ...(active ? { projectDirectory: active.path } : {}),
     })
   },
   killAll: async () => {

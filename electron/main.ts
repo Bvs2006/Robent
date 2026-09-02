@@ -20,28 +20,39 @@ import { app, BrowserWindow, ipcMain, safeStorage, dialog, shell } from 'electro
 import type { ChildProcess } from 'child_process'
 import { existsSync, mkdirSync, readdirSync, statSync } from 'fs'
 import { simpleGit } from 'simple-git'
-import type { SimpleGit } from 'simple-git'
 import { spawn as childSpawn } from 'child_process'
 
 import { createDriver } from './drivers.js'
 import type { BaseDriver } from './drivers.js'
 import { writeAgentMcpConfig } from './mcp.js'
-import { getSetupCompleted, refreshToolStatuses, runToolAction, saveToolSecret, setSetupCompleted } from './tool-setup.js'
+import { getSetupCompleted, refreshToolStatuses, runToolAction, saveToolSecret, setSetupCompleted, getToolStatusSnapshots, getToolSecretPlaintext, writeToolSessionInput, killToolSession, toolSupportsAuth, TOOL_IDS, TOOL_DEFINITIONS } from './tool-setup.js'
 import { composePromptForDriver, syncCapabilitiesForDriver } from './capabilities.js'
 import { getCapabilityRegistry, testMcpServerConnection } from './capabilities.js'
 import {
+  commitAndDiff,
+  createIsolatedWorktree,
+  genId,
+  isGitRepo,
+  listLocalBranches,
+  mergeWorktreeIntoHead,
+  removeWorktree,
+} from './workspace.js'
+import {
   getDb, seedDefaultData, purgeDemoData,
-  createJob, getJobs, getJob, updateJob,
+  createJob, getJobs, getJob, updateJob, deleteJob, nextReviewNumber,
   addActivity, getActivities,
   addTerminalLine, getTerminalLines,
   upsertWorker, removeWorker, getWorkers,
   getMcpServers, addMcpServer, updateMcpServer, deleteMcpServer,
-  getCredentials, addCredential, deleteCredential,
+  getCredentials, addCredential, deleteCredential, getCredentialSecrets,
   getSkills, addSkill, updateSkill, deleteSkill,
   getSettings, setSetting,
   getPlugins, addPlugin, updatePlugin, deletePlugin, togglePlugin,
-  getProjects, getProject, addProject, deleteProject, setActiveProject, updateProjectGitRemote,
+  getProjects, getProject, addProject, deleteProject, setActiveProject,
+  recordDriverQuotaError, getDriverQuotaErrors, recordTaskOutcome, getDriverSuccessRate,
+  getHooks, addHook, updateHook, deleteHook,
 } from './db.js'
+import { runHookCommand } from './capabilities.js'
 
 const __dirname = _dirname
 process.env.APP_ROOT = join(__dirname, '..')
@@ -59,10 +70,11 @@ let win: BrowserWindow | null = null
 interface ActiveJob {
   driver: BaseDriver
   jobId: string
-  raceJobId?: string
+  worktree?: string
+  branch?: string
 }
 const activeJobs = new Map<string, ActiveJob>()
-const activeToolSessions = new Map<string, { toolId: string; kind: 'install' | 'auth'; sessionId: string }>()
+const activeToolSessions = new Map<string, { toolId: string; kind: 'install' | 'auth' | 'terminal'; sessionId: string }>()
 
 /** Preview server tracking (Phase I: Review Loop) */
 const previewServers = new Map<string, { proc: ChildProcess; port: number; taskId: string }>()
@@ -104,9 +116,10 @@ app.whenReady().then(() => {
     const db = getDb()
     purgeDemoData()
     seedDefaultData()
-    // Reset any orphaned working tasks and workers from previous app sessions
+    // Reset any orphaned working tasks, workers, and stuck blocked states from previous app sessions
     db.prepare(`DELETE FROM workers`).run()
     db.prepare(`UPDATE jobs SET status = 'planned' WHERE status = 'working'`).run()
+    db.prepare(`UPDATE jobs SET is_blocked = 0, blocked_reason = NULL, sub_status = NULL WHERE is_blocked = 1`).run()
     refreshToolStatuses().catch((error) => console.error('Tool status refresh failed:', error))
   } catch (e) {
     console.error('DB init error:', e)
@@ -115,14 +128,333 @@ app.whenReady().then(() => {
 })
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
-function genId(): string { return Math.random().toString(36).substring(2, 9) }
-
 function emit(channel: string, ...args: any[]) {
   win?.webContents.send(channel, ...args)
 }
 
 function toolSetupCompleted(): boolean {
   return getSetupCompleted()
+}
+
+function parseJsonArray(value: string | null | undefined): string[] {
+  if (!value) return []
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed.map(String) : []
+  } catch {
+    return value.split(',').map((item) => item.trim()).filter(Boolean)
+  }
+}
+
+function parseJsonObject(value: string | null | undefined): Record<string, string> {
+  if (!value) return {}
+  try {
+    const parsed = JSON.parse(value)
+    return typeof parsed === 'object' && parsed ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function parseSkillIds(job: any): string[] | undefined {
+  if (!job?.skill_ids) return undefined
+  const ids = parseJsonArray(job.skill_ids)
+  return ids.length > 0 ? ids : undefined
+}
+
+function buildAgentEnv(agent: string): Record<string, string> {
+  const env: Record<string, string> = {}
+  const normalized = agent.toLowerCase().replace(/\s+/g, '-')
+
+  for (const cred of getCredentialSecrets()) {
+    try {
+      const encryptedBytes = Buffer.from(cred.secret_encrypted, 'base64')
+      const secret = safeStorage.isEncryptionAvailable()
+        ? safeStorage.decryptString(encryptedBytes)
+        : encryptedBytes.toString('utf8')
+      if (!secret) continue
+      const label = cred.label.toUpperCase().replace(/[^A-Z0-9]+/g, '_')
+      env[label] = secret
+      if (label.includes('OPENAI') || label.includes('CODEX')) env.OPENAI_API_KEY = secret
+      if (label.includes('ANTHROPIC') || label.includes('CLAUDE')) env.ANTHROPIC_API_KEY = secret
+      if (label.includes('AIDER')) env.AIDER_API_KEY = secret
+      if (label.includes('GITHUB')) env.GITHUB_TOKEN = secret
+    } catch (error) {
+      console.warn('Failed to decrypt credential:', error)
+    }
+  }
+
+  if (normalized.includes('aider')) {
+    const aiderSecret = getToolSecretPlaintext('aider')
+    if (aiderSecret) {
+      env.AIDER_API_KEY = aiderSecret
+      env.OPENAI_API_KEY = env.OPENAI_API_KEY || aiderSecret
+      env.ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY || aiderSecret
+    }
+  }
+
+  return env
+}
+
+async function runEnabledPlugins(workdir: string, taskId: string): Promise<{ ok: boolean; failedTests: string[]; summary: string }> {
+  const plugins = getPlugins().filter((row: any) => (row.enabled ?? row.is_enabled ?? 1) === 1 && row.command)
+  if (plugins.length === 0) {
+    return { ok: true, failedTests: [], summary: 'No enabled plugins' }
+  }
+
+  const failedTests: string[] = []
+  for (const plugin of plugins) {
+    const args = parseJsonArray(plugin.args)
+    const env = parseJsonObject(plugin.env)
+    try {
+      const result = await new Promise<{ code: number; output: string }>((resolve) => {
+        const proc = childSpawn(plugin.command, args, {
+          cwd: workdir,
+          shell: true,
+          env: { ...(process.env as Record<string, string>), ...env },
+        })
+        let output = ''
+        proc.stdout?.on('data', (data) => { output += data.toString() })
+        proc.stderr?.on('data', (data) => { output += data.toString() })
+        proc.on('close', (code) => resolve({ code: code ?? 1, output }))
+        proc.on('error', (error) => resolve({ code: 1, output: error.message }))
+      })
+      const missing = /not recognized|command not found|ENOENT/i.test(result.output)
+      if (missing) {
+        addActivity({ id: genId(), jobId: taskId, type: 'plugin_skipped', message: `${plugin.name} skipped (command unavailable)` })
+        continue
+      }
+      if (result.code !== 0) {
+        failedTests.push(`${plugin.name}: ${result.output.trim().slice(0, 160) || 'failed'}`)
+      }
+      addActivity({
+        id: genId(),
+        jobId: taskId,
+        type: result.code === 0 ? 'plugin_passed' : 'plugin_failed',
+        message: `${plugin.name} ${result.code === 0 ? 'passed' : 'failed'}`,
+      })
+    } catch (error: any) {
+      failedTests.push(`${plugin.name}: ${error?.message || 'failed'}`)
+    }
+  }
+
+  return {
+    ok: failedTests.length === 0,
+    failedTests,
+    summary: failedTests.length === 0 ? 'All enabled plugins passed' : `${failedTests.length} plugin(s) failed`,
+  }
+}
+
+async function finalizeTaskRun(
+  taskId: string,
+  agent: string,
+  actualWorkdir: string,
+  branchName: string,
+  result: { status: 'success' | 'failed'; summary: string; tokenCount?: number; cost?: number },
+) {
+  const job = getJob(taskId)
+  if (!job) return
+
+  let diffText = ''
+  let changes = 0
+  const shouldCommit = Boolean(job.worktree || branchName)
+  if (shouldCommit) {
+    try {
+      const commit = await commitAndDiff(actualWorkdir, `feat(${taskId}): ${job.title}`)
+      diffText = commit.diff
+      changes = commit.changes
+      if (changes > 0) {
+        addActivity({ id: genId(), jobId: taskId, type: 'git_committed', message: `Committed worktree changes to ${branchName}` })
+      }
+    } catch (error) {
+      console.warn('Git commit/diff failed:', error)
+    }
+  }
+
+  const pluginResult = await runEnabledPlugins(actualWorkdir, taskId)
+  const ciStatus = result.status === 'success' && pluginResult.ok ? 'passing' : 'failed'
+  const reviewNumber = nextReviewNumber()
+
+  recordTaskOutcome(agent, job.title, ciStatus === 'passing')
+  if (result.status === 'failed' && /rate limit|quota|429|exceeded|too many requests/i.test(result.summary)) {
+    recordDriverQuotaError(agent)
+  }
+
+  updateJob(taskId, {
+    status: 'review',
+    diff: diffText,
+    changes,
+    token_count: result.tokenCount || 0,
+    estimated_cost: result.cost || 0,
+    pr_number: reviewNumber,
+    ci_status: ciStatus,
+    failed_tests: pluginResult.failedTests.length > 0 ? JSON.stringify(pluginResult.failedTests) : null,
+    sub_status: ciStatus === 'failed' ? pluginResult.summary : null,
+    completed_at: new Date().toLocaleTimeString(),
+  })
+  removeWorker(taskId)
+  addActivity({
+    id: genId(),
+    jobId: taskId,
+    type: ciStatus === 'passing' ? 'ci_passed' : 'ci_failed',
+    message: `${agent} finished: ${result.summary}${pluginResult.ok ? '' : ` — ${pluginResult.summary}`}`,
+  })
+  emit('state-changed')
+  emit('task-done', taskId, { ...result, ciStatus, reviewNumber })
+}
+
+async function startAgentRun(
+  event: Electron.IpcMainInvokeEvent,
+  taskId: string,
+  agent: string,
+  workdir: string,
+  options: { feedback?: string; reuseWorktree?: boolean } = {},
+) {
+  const job = getJob(taskId)
+  if (!job) return { error: 'Job not found' }
+
+  const jobRunId = genId()
+  const branchName = options.reuseWorktree && job.branch
+    ? job.branch
+    : `agent/${taskId.toLowerCase()}-${jobRunId}`
+  let actualWorkdir = workdir
+  let usedWorktree = false
+
+  if (options.reuseWorktree && job.worktree) {
+    actualWorkdir = job.worktree
+    usedWorktree = true
+  } else if (await isGitRepo(workdir)) {
+    try {
+      const created = await createIsolatedWorktree(workdir, branchName, jobRunId)
+      actualWorkdir = created.workdir
+      usedWorktree = true
+    } catch (error) {
+      console.warn('Worktree creation failed, using original workdir:', error)
+    }
+  }
+
+  const mcpConfigPath = writeAgentMcpConfig(agent, actualWorkdir)
+  if (mcpConfigPath) {
+    addActivity({ id: genId(), jobId: taskId, type: 'mcp_configured', message: `MCP config written: ${mcpConfigPath}` })
+  }
+
+  const skillIds = parseSkillIds(job)
+  const capabilitySync = syncCapabilitiesForDriver(agent, actualWorkdir, { skillIds })
+  if (!capabilitySync.ok) {
+    updateJob(taskId, { sub_status: `Capability sync failed for ${agent}` })
+    addActivity({ id: genId(), jobId: taskId, type: 'capability_sync_failed', message: capabilitySync.error || `Capability sync failed for ${agent}` })
+  } else {
+    for (const log of capabilitySync.logs) {
+      addActivity({ id: genId(), jobId: taskId, type: 'capability_sync', message: log })
+    }
+  }
+
+  updateJob(taskId, {
+    status: 'working',
+    branch: usedWorktree ? branchName : null,
+    worktree: usedWorktree ? actualWorkdir : null,
+    started_at: new Date().toLocaleTimeString(),
+    runtime: 0,
+    ci_status: 'pending',
+    pr_number: null,
+    failed_tests: null,
+    sub_status: options.feedback ? 'Retry requested' : null,
+  })
+  upsertWorker({ id: `worker-${taskId}`, jobId: taskId, agent, status: 'running', runtime: 0 })
+  addActivity({ id: genId(), jobId: taskId, type: 'agent_started', message: `${agent} started on ${job.title}` })
+  if (usedWorktree) {
+    addActivity({ id: genId(), jobId: taskId, type: 'worktree_created', message: `Worktree: ${actualWorkdir}` })
+  }
+  emit('state-changed')
+
+  // Run Coordinator Pre-Task Hooks
+  const enabledHooks = (getHooks() || []).filter(
+    (h: any) => h.enabled === 1 && (h.scope === 'global' || h.scope.toLowerCase() === agent.toLowerCase().replace(/\s+/g, '-')),
+  )
+  const preTaskHooks = enabledHooks.filter((h: any) => h.event === 'pre-task')
+  for (const hook of preTaskHooks) {
+    addActivity({ id: genId(), jobId: taskId, type: 'hook_started', message: `Running pre-task hook: ${hook.name}` })
+    addTerminalLine({ id: genId(), jobId: taskId, type: 'output', content: `\r\n[Hook] Running pre-task hook "${hook.name}": $ ${hook.command}\r\n`, agent })
+    const hookResult = await runHookCommand(hook.command, actualWorkdir)
+    addTerminalLine({ id: genId(), jobId: taskId, type: 'output', content: `${hookResult.output}\r\n`, agent })
+  }
+
+  const driver = createDriver(agent)
+  const basePrompt = composePromptForDriver(agent, job.description, { skillIds })
+  const prompt = options.feedback
+    ? `${basePrompt}\n\n## Review Feedback\nThe previous attempt failed checks or review. Fix the issues below and complete the task.\n\n${options.feedback}`
+    : basePrompt
+
+  const settings = getSettings()
+  const timeoutMinutes = Number.parseInt(settings.defaultTimeout || '30', 10)
+  const timeoutMs = Number.isFinite(timeoutMinutes) && timeoutMinutes > 0 ? timeoutMinutes * 60_000 : 30 * 60_000
+
+  // Model selection override based on task size / complexity
+  const selectedModel = job.description.toLowerCase().includes('unit-test') || job.description.toLowerCase().includes('small')
+    ? 'gpt-4o-mini'
+    : 'claude-3-7-sonnet'
+
+  if (agent === 'OpenCode' || agent === 'Aider') {
+    addActivity({ id: genId(), jobId: taskId, type: 'model_selected', message: `${agent} model selected: ${selectedModel}` })
+  }
+
+  const { jobId: runId, promise } = driver.run(
+    prompt,
+    actualWorkdir,
+    (chunk) => {
+      event.sender.send('task-output', taskId, chunk)
+      addTerminalLine({ id: genId(), jobId: taskId, type: 'output', content: chunk, agent })
+
+      // Per-command approval pattern detection
+      if (/\[y\/n\]|Approve\s*command:|Run\s*shell\s*command\?|Allow\s*execution\?/i.test(chunk)) {
+        const promptId = genId()
+        const cmdMatch = chunk.match(/(?:`|\$|command:)\s*([^\r\n`]+)/i)
+        const command = cmdMatch ? cmdMatch[1].trim() : 'CLI Command Execution'
+        event.sender.send('command-approval-requested', { taskId, promptId, command })
+      }
+    },
+    buildAgentEnv(agent),
+    timeoutMs,
+    {
+      model: selectedModel,
+      approvalMode: settings.approvalMode === 'true' || settings.approvalMode === '1',
+    },
+  )
+
+  activeJobs.set(taskId, {
+    driver,
+    jobId: runId,
+    worktree: usedWorktree ? actualWorkdir : undefined,
+    branch: usedWorktree ? branchName : undefined,
+  })
+
+  promise.then(async (result) => {
+    activeJobs.delete(taskId)
+    await finalizeTaskRun(taskId, agent, actualWorkdir, branchName, result)
+
+    // Run Post-Task or On-Failure Hooks
+    const hooksToRun = enabledHooks.filter((h: any) =>
+      result.status === 'success' ? h.event === 'post-task' : h.event === 'on-failure',
+    )
+    for (const hook of hooksToRun) {
+      addActivity({ id: genId(), jobId: taskId, type: 'hook_started', message: `Running ${hook.event} hook: ${hook.name}` })
+      addTerminalLine({ id: genId(), jobId: taskId, type: 'output', content: `\r\n[Hook] Running ${hook.event} hook "${hook.name}": $ ${hook.command}\r\n`, agent })
+      const hookResult = await runHookCommand(hook.command, actualWorkdir)
+      addTerminalLine({ id: genId(), jobId: taskId, type: 'output', content: `${hookResult.output}\r\n`, agent })
+    }
+  }).catch(async (error) => {
+    activeJobs.delete(taskId)
+    console.error('Task run failed:', error)
+    updateJob(taskId, { status: 'planned', sub_status: `Driver error: ${error?.message || 'unknown'}` })
+    removeWorker(taskId)
+    emit('state-changed')
+    const failureHooks = enabledHooks.filter((h: any) => h.event === 'on-failure')
+    for (const hook of failureHooks) {
+      await runHookCommand(hook.command, actualWorkdir)
+    }
+  })
+
+  return { success: true, runId }
 }
 
 // ─── IPC: Jobs ────────────────────────────────────────────────────────────────
@@ -140,10 +472,25 @@ ipcMain.handle('update-job', (_e, id: string, fields: Record<string, any>) => {
   return getJob(id)
 })
 
+ipcMain.handle('delete-job', (_e, id: string) => {
+  const job = getJob(id)
+  if (!job) return { success: false, error: 'Job not found' }
+  deleteJob(id)
+  addActivity({ id: genId(), type: 'task_deleted', message: `Task deleted — ${job.title}` })
+  return { success: true }
+})
+
 ipcMain.handle('get-activities', () => getActivities(100))
 ipcMain.handle('get-workers', () => getWorkers())
 
 ipcMain.handle('get-terminal-lines', (_e, jobId: string) => getTerminalLines(jobId))
+ipcMain.handle('send-task-input', (_e, { taskId, data }: { taskId: string; data: string }) => {
+  const active = activeJobs.get(taskId)
+  if (active) {
+    return active.driver.write(data)
+  }
+  return false
+})
 
 // ─── IPC: Tool Setup ──────────────────────────────────────────────────────────
 // get-tool-statuses: returns CACHED rows from DB instantly (no CLI probes, no blink)
@@ -164,7 +511,7 @@ ipcMain.handle('save-tool-secret', (_e, payload: { toolId: string; label: string
   saveToolSecret(payload.toolId as any, payload.label, payload.secret)
   return { success: true }
 })
-ipcMain.handle('run-tool-action', async (event, payload: { toolId: string; kind: 'install' | 'auth'; secret?: string }) => {
+ipcMain.handle('run-tool-action', async (event, payload: { toolId: string; kind: 'install' | 'auth' | 'terminal'; secret?: string }) => {
   const { sessionId, promise } = runToolAction(
     payload.toolId as any,
     payload.kind,
@@ -193,113 +540,267 @@ ipcMain.handle('run-tool-action', async (event, payload: { toolId: string; kind:
   return { sessionId, exitCode: result.exitCode }
 })
 
+ipcMain.handle('write-tool-input', (_e, payload: { sessionId: string; data: string }) => {
+  return { ok: writeToolSessionInput(payload.sessionId, payload.data) }
+})
+
+ipcMain.handle('kill-tool-session', (_e, sessionId: string) => {
+  const killed = killToolSession(sessionId)
+  if (killed) activeToolSessions.delete(sessionId)
+  return { ok: killed }
+})
+
+ipcMain.handle('get-tool-auth-capabilities', () => {
+  return TOOL_IDS.map((toolId) => {
+    const def = TOOL_DEFINITIONS[toolId]
+    return {
+      toolId,
+      name: def.name,
+      binary: def.binary,
+      supportsAuth: toolSupportsAuth(toolId),
+      authCommand: def.authCommand
+        ? [def.authCommand, ...(def.authArgs || [])].join(' ')
+        : toolId === 'aider'
+          ? 'API key (saved securely)'
+          : null,
+    }
+  })
+})
+
+function selectDriverForSubtask(
+  subtaskTag: string,
+  mode: 'auto' | 'custom',
+  customPool: string[] = [],
+  availableTools: any[],
+): { agent: string; rationale: string; blocked?: boolean; reason?: string } {
+  const toolToAgentMap: Record<string, string> = {
+    'claude-code': 'Claude Code',
+    'codex': 'Codex',
+    'opencode': 'OpenCode',
+    'antigravity': 'Antigravity',
+    'aider': 'Aider',
+  }
+  const agentToToolMap: Record<string, string> = {
+    'Claude Code': 'claude-code',
+    'Codex': 'codex',
+    'OpenCode': 'opencode',
+    'Antigravity': 'antigravity',
+    'Aider': 'aider',
+  }
+
+  const capabilityFit: Record<string, string[]> = {
+    'claude-code': ['refactor', 'multi-file', 'architecture', 'planning', 'core', 'ui', 'frontend', 'general'],
+    'codex': ['function', 'boilerplate', 'unit-test', 'small', 'tests', 'core'],
+    'antigravity': ['ui', 'browser', 'frontend', 'visual', 'verification'],
+    'aider': ['diff', 'tight-scope', 'quick-fix', 'patch', 'edit'],
+    'opencode': ['general', 'general-purpose', 'fallback', 'script', 'core', 'ui', 'frontend', 'unit-test', 'tests', 'refactor', 'backend', 'full-stack', 'tracking', 'system'],
+  }
+
+  const rationales: Record<string, string> = {
+    'claude-code': 'Claude Code: architecture & multi-file reasoning, strong quota headroom',
+    'codex': 'Codex: small isolated function & unit tests, fast/cheap fit',
+    'antigravity': 'Antigravity: browser and UI component verification',
+    'aider': 'Aider: tight-scope diffs and quick patches',
+    'opencode': 'OpenCode: general-purpose full-stack execution',
+  }
+
+  const readyToolSnapshots = availableTools.filter((t) => t.available)
+  const candidateSnapshots = readyToolSnapshots.length > 0 ? readyToolSnapshots : availableTools
+
+  let eligibleSnapshots = candidateSnapshots
+
+  if (mode === 'custom') {
+    if (!customPool || customPool.length === 0) {
+      return { agent: candidateSnapshots[0]?.name || 'Claude Code', rationale: 'No selected tool fits this subtask', blocked: true, reason: 'No selected tool fits this subtask' }
+    }
+    const poolToolIds = customPool.map((agentName) => agentToToolMap[agentName]).filter(Boolean)
+    eligibleSnapshots = candidateSnapshots.filter((t) => poolToolIds.includes(t.toolId))
+
+    if (eligibleSnapshots.length === 0) {
+      return { agent: customPool[0] || 'Claude Code', rationale: 'No selected tool fits this subtask', blocked: true, reason: 'No selected tool fits this subtask' }
+    }
+  }
+
+  // Credit / Quota filter: if a tool has 3+ recent quota errors, deprioritize or exclude it if others exist
+  const unexhausted = eligibleSnapshots.filter((tool) => getDriverQuotaErrors(tool.toolId) < 3)
+  const candidatePool = unexhausted.length > 0 ? unexhausted : eligibleSnapshots
+
+  const scored = candidatePool.map((tool) => {
+    let score = 0
+    const fits = capabilityFit[tool.toolId] || []
+    const tagLower = (subtaskTag || '').toLowerCase()
+    const fitMatch = fits.some((kw) => {
+      try {
+        const re = new RegExp(`\\b${kw.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}\\b`, 'i')
+        return re.test(tagLower)
+      } catch {
+        return tagLower.includes(kw)
+      }
+    })
+    if (fitMatch) score += 50
+    else score += 10
+
+    const errorCount = getDriverQuotaErrors(tool.toolId)
+    score -= errorCount * 15
+
+    const successRate = getDriverSuccessRate(tool.toolId, subtaskTag)
+    score += Math.round(successRate * 30)
+
+    return { tool, agentName: toolToAgentMap[tool.toolId] || tool.name, score, fitMatch }
+  })
+
+  scored.sort((a, b) => b.score - a.score)
+  const best = scored[0]
+
+  return {
+    agent: best.agentName,
+    rationale: rationales[best.tool.toolId] || `${best.agentName}: optimal capability fit`,
+  }
+}
+
+// ─── IPC: Plan Task ────────────────────────────────────────────────────────────
+ipcMain.handle('plan-task', async (_e, { description, mode, customPool }: { description: string; mode?: 'auto' | 'custom'; customPool?: string[] }) => {
+  const availableTools = getToolStatusSnapshots()
+  const modeVal = mode || 'auto'
+  const poolVal = customPool || []
+
+  // Define phases with capability tags and dependency modes
+  const words = (description || 'Task').split(' ').slice(0, 4).join(' ')
+  const phases = [
+    { tag: 'core', title: `${words} — Core`, desc: `Phase 1 — Core logic & architecture: ${description}`, dep: 'parallel' as const },
+    { tag: 'ui', title: `${words} — UI`, desc: `Phase 2 — UI components & layout: ${description}`, dep: 'parallel' as const },
+    { tag: 'unit-test', title: `${words} — Tests`, desc: `Phase 3 — Unit tests & verification: ${description}`, dep: 'sequential' as const },
+  ]
+
+  const subtasks = phases.map((p) => {
+    const selection = selectDriverForSubtask(p.tag + ' ' + description, modeVal, poolVal, availableTools)
+    return {
+      id: genId(),
+      title: p.title,
+      description: p.desc,
+      capabilityTag: p.tag,
+      assignedAgent: selection.agent,
+      rationale: selection.rationale,
+      dependencyMode: p.dep,
+      status: selection.blocked ? 'blocked' : 'planned',
+      blockedReason: selection.reason,
+    }
+  })
+
+  return subtasks
+})
+
 // ─── IPC: Run Task ────────────────────────────────────────────────────────────
 ipcMain.handle('run-task', async (event, { taskId, agent, workdir }: { taskId: string; agent: string; workdir: string }) => {
+  if (activeJobs.has(taskId)) return { error: 'Task is already running' }
+
   const job = getJob(taskId)
   if (!job) return { error: 'Job not found' }
 
-  // Worktree isolation
-  const jobRunId = genId()
-  const branchName = `agent/${taskId.toLowerCase()}-${jobRunId}`
-  let actualWorkdir = workdir
+  const mode = (job.execution_mode || 'auto') as 'auto' | 'custom'
+  const customPool = parseJsonArray(job.custom_agent_pool)
+  const availableTools = getToolStatusSnapshots()
 
-  try {
-    const git: SimpleGit = simpleGit(workdir)
-    const wtPath = join(workdir, '.agent-worktrees', jobRunId)
-    mkdirSync(join(workdir, '.agent-worktrees'), { recursive: true })
-    await git.raw(['worktree', 'add', '-b', branchName, wtPath])
-    actualWorkdir = wtPath
-  } catch (e) {
-    console.warn('Worktree creation failed, using original workdir:', e)
-  }
+  const selection = selectDriverForSubtask(job.title + ' ' + job.description, mode, customPool, availableTools)
 
-  // Write MCP server config file for this agent in the worktree
-  const mcpConfigPath = writeAgentMcpConfig(agent, actualWorkdir)
-  if (mcpConfigPath) {
-    addActivity({ id: genId(), jobId: taskId, type: 'mcp_configured', message: `MCP config written: ${mcpConfigPath}` })
-  }
-
-  const capabilitySync = syncCapabilitiesForDriver(agent, actualWorkdir, {
-    skillIds: Array.isArray((job as any).skill_ids) ? (job as any).skill_ids : undefined,
-  })
-  if (!capabilitySync.ok) {
-    updateJob(taskId, { sub_status: `Capability sync failed for ${agent}` })
-    addActivity({ id: genId(), jobId: taskId, type: 'capability_sync_failed', message: capabilitySync.error || `Capability sync failed for ${agent}` })
-  } else {
-    for (const log of capabilitySync.logs) {
-      addActivity({ id: genId(), jobId: taskId, type: 'capability_sync', message: log })
-    }
-  }
-
-  // Update job state
-  updateJob(taskId, {
-    status: 'working',
-    branch: branchName,
-    worktree: actualWorkdir,
-    started_at: new Date().toLocaleTimeString(),
-    runtime: 0,
-  })
-  upsertWorker({ id: `worker-${taskId}`, jobId: taskId, agent, status: 'running', runtime: 0 })
-  addActivity({ id: genId(), jobId: taskId, type: 'agent_started', message: `${agent} started on ${job.title}` })
-  addActivity({ id: genId(), jobId: taskId, type: 'worktree_created', message: `Worktree: ${actualWorkdir}` })
-  emit('state-changed')
-
-  // Create and run driver
-  const driver = createDriver(agent)
-  const prompt = composePromptForDriver(agent, job.description, {
-    skillIds: Array.isArray((job as any).skill_ids) ? (job as any).skill_ids : undefined,
-  })
-  const { jobId: runId, promise } = driver.run(prompt, actualWorkdir, (chunk) => {
-    event.sender.send('task-output', taskId, chunk)
-    // Store chunk as terminal line
-    addTerminalLine({ id: genId(), jobId: taskId, type: 'output', content: chunk })
-  })
-
-  activeJobs.set(taskId, { driver, jobId: runId })
-
-  // Don't await — let it resolve in background
-  promise.then(async (result) => {
-    activeJobs.delete(taskId)
-
-    // Stage & commit worktree changes automatically
-    let diffText = ''
-    try {
-      const git: SimpleGit = simpleGit(actualWorkdir)
-      await git.add('.')
-      const status = await git.status()
-      if (status.staged.length > 0 || status.created.length > 0 || status.modified.length > 0) {
-        await git.commit(`feat(${taskId}): ${job.title}`)
-        addActivity({ id: genId(), jobId: taskId, type: 'git_committed', message: `Committed worktree changes to ${branchName}` })
-        diffText = await git.diff(['HEAD~1'])
-      } else {
-        diffText = await git.diff(['HEAD'])
-      }
-    } catch (e) {
-      console.warn('Git commit/diff failed:', e)
-    }
-
-    // Estimate token cost
-    const tokenCount = result.tokenCount || 0
-    const estimatedCost = result.cost || 0
-
+  if (selection.blocked) {
     updateJob(taskId, {
-      status: 'review',
-      diff: diffText,
-      token_count: tokenCount,
-      estimated_cost: estimatedCost,
-      // A pull request number is only assigned by a real Git provider.
-      // Do not fabricate PRs for local task runs.
-      pr_number: null,
-      ci_status: result.status === 'success' ? 'passing' : 'failed',
-      completed_at: new Date().toLocaleTimeString(),
+      is_blocked: 1,
+      blocked_reason: selection.reason || 'No selected tool fits this subtask',
+      sub_status: selection.reason || 'No selected tool fits this subtask',
     })
-    removeWorker(taskId)
-    addActivity({ id: genId(), jobId: taskId, type: result.status === 'success' ? 'ci_passed' : 'ci_failed', message: `${agent} finished: ${result.summary}` })
     emit('state-changed')
-    emit('task-done', taskId, result)
+    return { error: selection.reason || 'No selected tool fits this subtask' }
+  }
+
+  updateJob(taskId, { is_blocked: 0, blocked_reason: null })
+  const chosenAgent = selection.agent || agent
+
+  return startAgentRun(event, taskId, chosenAgent, workdir)
+})
+
+ipcMain.handle('set-task-execution-mode', (_e, { taskId, mode }: { taskId: string; mode: string }) => {
+  const job = getJob(taskId)
+  if (!job) return null
+  const customPool = parseJsonArray(job.custom_agent_pool)
+  const availableTools = getToolStatusSnapshots()
+  const modeVal = (mode || 'auto') as 'auto' | 'custom'
+
+  const description = job.description || job.title
+  const words = (description || 'Task').split(' ').slice(0, 4).join(' ')
+  const phases = [
+    { tag: 'core', title: `${words} — Core`, desc: `Phase 1 — Core logic & architecture: ${description}`, dep: 'parallel' as const },
+    { tag: 'ui', title: `${words} — UI`, desc: `Phase 2 — UI components & layout: ${description}`, dep: 'parallel' as const },
+    { tag: 'unit-test', title: `${words} — Tests`, desc: `Phase 3 — Unit tests & verification: ${description}`, dep: 'sequential' as const },
+  ]
+
+  const subtasks = phases.map((p) => {
+    const selection = selectDriverForSubtask(p.tag + ' ' + description, modeVal, customPool, availableTools)
+    return {
+      id: genId(),
+      title: p.title,
+      description: p.desc,
+      capabilityTag: p.tag,
+      assignedAgent: selection.agent,
+      rationale: selection.rationale,
+      dependencyMode: p.dep,
+      status: selection.blocked ? 'blocked' : 'planned',
+      blockedReason: selection.reason,
+    }
   })
 
-  return { success: true, runId }
+  updateJob(taskId, { execution_mode: mode, subtasks: JSON.stringify(subtasks) })
+  emit('state-changed')
+  return getJob(taskId)
+})
+
+ipcMain.handle('set-task-custom-pool', (_e, { taskId, pool }: { taskId: string; pool: string[] }) => {
+  const job = getJob(taskId)
+  if (!job) return null
+  const modeVal = (job.execution_mode || 'custom') as 'auto' | 'custom'
+  const availableTools = getToolStatusSnapshots()
+
+  const description = job.description || job.title
+  const words = (description || 'Task').split(' ').slice(0, 4).join(' ')
+  const phases = [
+    { tag: 'core', title: `${words} — Core`, desc: `Phase 1 — Core logic & architecture: ${description}`, dep: 'parallel' as const },
+    { tag: 'ui', title: `${words} — UI`, desc: `Phase 2 — UI components & layout: ${description}`, dep: 'parallel' as const },
+    { tag: 'unit-test', title: `${words} — Tests`, desc: `Phase 3 — Unit tests & verification: ${description}`, dep: 'sequential' as const },
+  ]
+
+  const subtasks = phases.map((p) => {
+    const selection = selectDriverForSubtask(p.tag + ' ' + description, modeVal, pool, availableTools)
+    return {
+      id: genId(),
+      title: p.title,
+      description: p.desc,
+      capabilityTag: p.tag,
+      assignedAgent: selection.agent,
+      rationale: selection.rationale,
+      dependencyMode: p.dep,
+      status: selection.blocked ? 'blocked' : 'planned',
+      blockedReason: selection.reason,
+    }
+  })
+
+  updateJob(taskId, { custom_agent_pool: JSON.stringify(pool), subtasks: JSON.stringify(subtasks) })
+  emit('state-changed')
+  return getJob(taskId)
+})
+
+ipcMain.handle('retry-task', async (event, { taskId, feedback }: { taskId: string; feedback?: string }) => {
+  if (activeJobs.has(taskId)) return { error: 'Task is already running' }
+  const job = getJob(taskId)
+  if (!job) return { error: 'Job not found' }
+  const workdir = job.worktree || getProjects().find((p: any) => p.is_active === 1)?.path || '.'
+  const notes = feedback
+    || (job.failed_tests ? parseJsonArray(job.failed_tests).join('\n') : '')
+    || job.sub_status
+    || 'Previous attempt failed. Investigate and fix remaining issues.'
+  return startAgentRun(event, taskId, job.agent, workdir, {
+    feedback: notes,
+    reuseWorktree: Boolean(job.worktree),
+  })
 })
 
 // ─── IPC: Cancel Task ─────────────────────────────────────────────────────────
@@ -329,36 +830,6 @@ ipcMain.handle('kill-all', () => {
   return { success: true }
 })
 
-// ─── IPC: Race Mode ───────────────────────────────────────────────────────────
-ipcMain.handle('run-race', async (event, { taskId, agents, workdir }: { taskId: string; agents: string[]; workdir: string }) => {
-  const job = getJob(taskId)
-  if (!job || agents.length < 2) return { error: 'Invalid race params' }
-
-  const raceResults: Record<string, any> = {}
-  const runners = agents.map(async (agent) => {
-    const driver = createDriver(agent)
-    const capabilitySync = syncCapabilitiesForDriver(agent, workdir, {
-      skillIds: Array.isArray((job as any).skill_ids) ? (job as any).skill_ids : undefined,
-    })
-    if (!capabilitySync.ok) {
-      addActivity({ id: genId(), jobId: taskId, type: 'capability_sync_failed', message: capabilitySync.error || `Capability sync failed for ${agent}` })
-    }
-    const prompt = composePromptForDriver(agent, job.description, {
-      skillIds: Array.isArray((job as any).skill_ids) ? (job as any).skill_ids : undefined,
-    })
-    const { jobId, promise } = driver.run(prompt, workdir, (chunk) => {
-      event.sender.send('race-output', taskId, agent, chunk)
-    })
-    const result = await promise
-    raceResults[agent] = { ...result, jobId }
-    emit('race-result', taskId, agent, result)
-    return result
-  })
-
-  await Promise.all(runners)
-  return raceResults
-})
-
 // ─── IPC: Merge Task ──────────────────────────────────────────────────────────
 ipcMain.handle('merge-task', async (_e, taskId: string) => {
   const job = getJob(taskId)
@@ -366,25 +837,7 @@ ipcMain.handle('merge-task', async (_e, taskId: string) => {
 
   try {
     if (job.worktree && job.branch) {
-      // Resolve the actual repository root and current branch instead of
-      // assuming the worktree is always two directories below `main`.
-      const worktreeGit = simpleGit(job.worktree)
-      const repoRoot = (await worktreeGit.revparse(['--show-toplevel'])).trim()
-      const git: SimpleGit = simpleGit(repoRoot)
-      const targetBranch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim()
-      if (!targetBranch || targetBranch === 'HEAD') throw new Error('Repository is in detached HEAD state')
-      await git.checkout(targetBranch)
-      try {
-        await git.merge([job.branch, '--no-ff', '-m', `Merge ${job.branch} into ${targetBranch}`])
-      } catch (mergeError) {
-        await git.merge(['--abort']).catch(() => undefined)
-        throw mergeError
-      }
-      // Clean up worktree
-      try {
-        await git.raw(['worktree', 'remove', '--force', job.worktree])
-        await git.deleteLocalBranch(job.branch, true)
-      } catch { /* ignore cleanup failures */ }
+      await mergeWorktreeIntoHead(job.worktree, job.branch)
     }
   } catch (e: any) {
     const message = e?.message || 'Git merge failed'
@@ -394,8 +847,18 @@ ipcMain.handle('merge-task', async (_e, taskId: string) => {
     return { success: false, error: message }
   }
 
-  updateJob(taskId, { status: 'done', branch: null, worktree: null, completed_at: new Date().toLocaleTimeString() })
-  addActivity({ id: genId(), jobId: taskId, type: 'pr_merged', message: `PR #${job.pr_number} merged into main` })
+  updateJob(taskId, {
+    status: 'done',
+    branch: null,
+    worktree: null,
+    completed_at: new Date().toLocaleTimeString(),
+  })
+  addActivity({
+    id: genId(),
+    jobId: taskId,
+    type: 'pr_merged',
+    message: job.pr_number ? `Review #${job.pr_number} merged` : 'Worktree merged into current branch',
+  })
   emit('state-changed')
   return { success: true }
 })
@@ -406,20 +869,57 @@ ipcMain.handle('discard-task', async (_e, taskId: string) => {
   if (!job) return { error: 'Not found' }
 
   try {
-    if (job.worktree && job.branch) {
-      const repoRoot = (await simpleGit(job.worktree).revparse(['--show-toplevel'])).trim()
-      const git: SimpleGit = simpleGit(repoRoot)
-      await git.raw(['worktree', 'remove', '--force', job.worktree])
-      await git.deleteLocalBranch(job.branch, true)
+    if (job.worktree) {
+      await removeWorktree(job.worktree, job.branch)
     }
   } catch (e) {
     console.warn('Discard cleanup failed:', e)
   }
 
-  updateJob(taskId, { status: 'planned', branch: null, worktree: null, diff: null, pr_number: null })
+  updateJob(taskId, {
+    status: 'planned',
+    branch: null,
+    worktree: null,
+    diff: null,
+    pr_number: null,
+    ci_status: 'none',
+    failed_tests: null,
+    changes: 0,
+  })
   addActivity({ id: genId(), jobId: taskId, type: 'agent_stopped', message: 'Worktree discarded' })
   emit('state-changed')
   return { success: true }
+})
+
+ipcMain.handle('create-worktree', async (_e, payload: { branchName: string; baseBranch?: string; workdir?: string }) => {
+  const projects = getProjects()
+  const active = projects.find((p: any) => p.is_active === 1) || projects[0]
+  const workdir = payload.workdir || active?.path
+  if (!workdir) return { error: 'No active project selected' }
+  if (!payload.branchName?.trim()) return { error: 'Branch name is required' }
+  if (!(await isGitRepo(workdir))) return { error: 'Active project is not a Git repository' }
+
+  try {
+    const created = await createIsolatedWorktree(
+      workdir,
+      payload.branchName.trim(),
+      `manual-${genId()}`,
+      payload.baseBranch || undefined,
+    )
+    addActivity({ id: genId(), type: 'worktree_created', message: `Manual worktree ${created.branch} at ${created.workdir}` })
+    emit('state-changed')
+    return { success: true, ...created }
+  } catch (error: any) {
+    return { error: error?.message || 'Failed to create worktree' }
+  }
+})
+
+ipcMain.handle('list-branches', async (_e, workdir?: string) => {
+  const projects = getProjects()
+  const active = projects.find((p: any) => p.is_active === 1) || projects[0]
+  const dir = workdir || active?.path
+  if (!dir || !(await isGitRepo(dir))) return { current: '', all: [] }
+  return listLocalBranches(dir)
 })
 
 // ─── IPC: Preview Server (Phase I: Review Loop) ────────────────────────────────
@@ -427,21 +927,12 @@ ipcMain.handle('start-preview-server', (_e, taskId: string) => {
   const job = getJob(taskId)
   if (!job || !job.worktree) return { error: 'No worktree found' }
 
-  // Check if already running
   if (previewServers.has(taskId)) {
     return { port: previewServers.get(taskId)!.port, alreadyRunning: true }
   }
 
-  // Kill any existing preview server for this task
-  const existing = previewServers.get(taskId)
-  if (existing) {
-    existing.proc.kill()
-    previewServers.delete(taskId)
-  }
-
-  // Find an available port starting from 3000
-  let port = 3000
-  const proc = childSpawn('npm', ['run', 'dev'], {
+  let port = 3000 + (previewServers.size % 100)
+  const proc = childSpawn('npm', ['run', 'dev', '--', '--port', String(port)], {
     cwd: job.worktree,
     stdio: 'pipe',
     shell: true,
@@ -449,30 +940,29 @@ ipcMain.handle('start-preview-server', (_e, taskId: string) => {
   })
 
   let output = ''
+  const markReady = (resolvedPort: number) => {
+    if (previewServers.has(taskId)) return
+    previewServers.set(taskId, { proc, port: resolvedPort, taskId })
+    emit('preview-ready', taskId, resolvedPort, output)
+  }
+
   proc.stdout?.on('data', (data) => {
     const str = data.toString()
     output += str
-    // Look for "Listening on" or port info
-    const portMatch = str.match(/port\s+(\d+)/i) || str.match(/Listening on\s+.*:(\d+)/i)
-    if (portMatch && !previewServers.has(taskId)) {
-      port = parseInt(portMatch[1])
-      previewServers.set(taskId, { proc, port, taskId })
-      emit('preview-ready', taskId, port, output)
-    }
+    const portMatch = str.match(/(?:localhost|127\.0\.0\.1|0\.0\.0\.0):(\d+)/i)
+      || str.match(/port\s+(\d+)/i)
+      || str.match(/Listening on\s+.*:(\d+)/i)
+    if (portMatch) markReady(parseInt(portMatch[1], 10))
   })
 
   proc.stderr?.on('data', (data) => {
-    output += data.toString()
+    const str = data.toString()
+    output += str
+    const portMatch = str.match(/(?:localhost|127\.0\.0\.1|0\.0\.0\.0):(\d+)/i)
+    if (portMatch) markReady(parseInt(portMatch[1], 10))
   })
 
-  // Timeout if no port found after 10s
-  setTimeout(() => {
-    if (!previewServers.has(taskId)) {
-      previewServers.set(taskId, { proc, port, taskId })
-      emit('preview-ready', taskId, port, output)
-    }
-  }, 10000)
-
+  setTimeout(() => markReady(port), 10000)
   return { port, starting: true }
 })
 
@@ -483,6 +973,65 @@ ipcMain.handle('stop-preview-server', (_e, taskId: string) => {
     previewServers.delete(taskId)
   }
   return { success: true }
+})
+
+// ─── IPC: Plan Approval & Command Approval ────────────────────────────────────
+ipcMain.handle('approve-plan', async (_e, taskId: string) => {
+  updateJob(taskId, { plan_approved: 1 })
+  addActivity({ id: genId(), jobId: taskId, type: 'plan_approved', message: `Plan approved for task ${taskId}` })
+  emit('state-changed')
+  return { success: true }
+})
+
+ipcMain.handle('update-subtask-agent', async (_e, { taskId, subtaskId, agent }: { taskId: string; subtaskId: string; agent: string }) => {
+  const job = getJob(taskId)
+  if (!job) return { error: 'Job not found' }
+  try {
+    const subtasks = JSON.parse(job.subtasks || '[]')
+    const updated = subtasks.map((st: any) => st.id === subtaskId ? { ...st, assignedAgent: agent } : st)
+    updateJob(taskId, { subtasks: JSON.stringify(updated) })
+    emit('state-changed')
+    return { success: true }
+  } catch {
+    return { error: 'Failed to update subtask' }
+  }
+})
+
+ipcMain.handle('respond-command-approval', async (_e, { taskId, approve }: { taskId: string; promptId: string; approve: boolean }) => {
+  const active = activeJobs.get(taskId)
+  if (active) {
+    const input = approve ? 'y\n' : 'n\n'
+    return active.driver.write(input)
+  }
+  return false
+})
+
+// ─── IPC: Hooks ───────────────────────────────────────────────────────────────
+ipcMain.handle('get-hooks', () => getHooks())
+ipcMain.handle('add-hook', (_e, hook: any) => {
+  const id = genId()
+  addHook({ ...hook, id, enabled: hook.enabled ? 1 : 0 })
+  return getHooks()
+})
+ipcMain.handle('update-hook', (_e, id: string, fields: Record<string, any>) => {
+  if (typeof fields.enabled === 'boolean') {
+    fields.enabled = fields.enabled ? 1 : 0
+  }
+  updateHook(id, fields)
+  return getHooks()
+})
+ipcMain.handle('delete-hook', (_e, id: string) => {
+  deleteHook(id)
+  return getHooks()
+})
+ipcMain.handle('toggle-hook', (_e, id: string, enabled: boolean) => {
+  updateHook(id, { enabled: enabled ? 1 : 0 })
+  return getHooks()
+})
+ipcMain.handle('test-hook-command', async (_e, command: string) => {
+  const activeProject = getProjects().find((p: any) => p.is_active === 1)
+  const workdir = activeProject?.path || process.cwd()
+  return runHookCommand(command, workdir)
 })
 
 // ─── IPC: MCP Servers ─────────────────────────────────────────────────────────
@@ -507,13 +1056,10 @@ ipcMain.handle('delete-mcp-server', (_e, id: string) => {
 ipcMain.handle('get-credentials', () => getCredentials())
 ipcMain.handle('add-credential', (_e, cred: { agent: string; label: string; secret: string }) => {
   const id = genId()
-  // Store secret encrypted
-  if (safeStorage.isEncryptionAvailable()) {
-    const encrypted = safeStorage.encryptString(cred.secret)
-    // In production: write to a secure store keyed by id
-    console.log(`Stored encrypted credential for ${cred.agent}:${cred.label} (${encrypted.length} bytes)`)
-  }
-  addCredential({ id, agent: cred.agent, label: cred.label })
+  const encrypted = safeStorage.isEncryptionAvailable()
+    ? safeStorage.encryptString(cred.secret).toString('base64')
+    : Buffer.from(cred.secret, 'utf8').toString('base64')
+  addCredential({ id, agent: cred.agent, label: cred.label, secretEncrypted: encrypted })
   return getCredentials()
 })
 ipcMain.handle('delete-credential', (_e, id: string) => {
@@ -564,6 +1110,20 @@ ipcMain.handle('open-external', (_e, url: string) => {
   return { success: true }
 })
 
+ipcMain.handle('open-native-terminal', () => {
+  const isWin = process.platform === 'win32'
+  const workdir = getProjects().find((p: any) => p.is_active === 1)?.path || process.cwd()
+
+  if (isWin) {
+    childSpawn('cmd.exe', ['/c', 'start', 'cmd.exe'], { cwd: workdir, detached: true, stdio: 'ignore' })
+  } else if (process.platform === 'darwin') {
+    childSpawn('open', ['-a', 'Terminal', workdir], { detached: true, stdio: 'ignore' })
+  } else {
+    childSpawn('x-terminal-emulator', [], { cwd: workdir, detached: true, stdio: 'ignore' })
+  }
+  return { success: true }
+})
+
 // ─── IPC: Settings ─────────────────────────────────────────────────────────────
 ipcMain.handle('get-settings', () => getSettings())
 ipcMain.handle('set-setting', (_e, key: string, value: string) => {
@@ -580,7 +1140,14 @@ ipcMain.handle('show-open-dialog', async () => {
 })
 ipcMain.handle('get-projects', () => getProjects())
 ipcMain.handle('get-project', (_e, id: string) => getProject(id))
-ipcMain.handle('add-project', async (_e, project: { name: string; path: string; gitRemote?: string }) => {
+ipcMain.handle('add-project', async (_e, project: {
+  name: string
+  path: string
+  gitRemote?: string
+  createIfMissing?: boolean
+  gitInit?: boolean
+  setActive?: boolean
+}) => {
   const projectPath = project.path.trim()
   const remote = project.gitRemote?.trim() || ''
   if (!project.name.trim() || !projectPath) return { error: 'Project name and folder are required' }
@@ -591,15 +1158,27 @@ ipcMain.handle('add-project', async (_e, project: { name: string; path: string; 
       const entries = readdirSync(projectPath)
       if (entries.length === 0) await simpleGit().clone(remote, projectPath)
       else if (!existsSync(join(projectPath, '.git'))) return { error: 'Destination folder is not empty and is not a Git repository' }
+    } else if (project.createIfMissing && !existsSync(projectPath)) {
+      mkdirSync(projectPath, { recursive: true })
     }
   } catch (error: any) {
-    return { error: `Git clone failed: ${error?.message || 'check the URL and access rights'}` }
+    return { error: `Project setup failed: ${error?.message || 'check the path and access rights'}` }
   }
   if (!existsSync(projectPath) || !statSync(projectPath).isDirectory()) {
     return { error: 'Project folder does not exist' }
   }
+  if (project.gitInit && !(await isGitRepo(projectPath))) {
+    try {
+      await simpleGit(projectPath).init()
+    } catch (error: any) {
+      return { error: `Git init failed: ${error?.message || 'could not initialize repository'}` }
+    }
+  }
   const id = genId()
   addProject({ ...project, id, path: projectPath, gitRemote: remote })
+  if (project.setActive !== false) {
+    setActiveProject(id)
+  }
   return getProjects()
 })
 ipcMain.handle('delete-project', (_e, id: string) => {

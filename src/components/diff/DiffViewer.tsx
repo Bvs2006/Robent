@@ -1,4 +1,4 @@
-import { X, FileCode } from 'lucide-react'
+import { X, FileCode, ArrowLeft } from 'lucide-react'
 import { useFleetStore } from '../../store/fleetStore'
 
 export default function DiffViewer() {
@@ -13,20 +13,42 @@ export default function DiffViewer() {
     <div className="flex flex-col h-full bg-[#09090b]">
       {/* Header */}
       <div className="h-11 border-b border-[#1a1a20] bg-[#0c0c0e] flex items-center justify-between px-4 shrink-0">
-        <div className="flex items-center gap-2.5">
-          <FileCode className="w-4 h-4 text-sky-400" />
-          <span className="text-sm font-bold text-white">Diff Viewer</span>
-          <span className="text-xs text-zinc-500">— {task.title}</span>
-          <span className="text-[10px] font-mono text-zinc-600 bg-[#131318] border border-[#1e1e26] px-2 py-0.5 rounded-md">
-            {task.branch}
-          </span>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={closeDiff}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#18181f] border border-[#272732] text-xs font-semibold text-zinc-300 hover:text-white hover:bg-[#22222c] transition-colors"
+            title="Back to Board"
+          >
+            <ArrowLeft className="w-3.5 h-3.5 text-sky-400" />
+            <span>Back to Board</span>
+          </button>
+          <div className="flex items-center gap-2">
+            <FileCode className="w-4 h-4 text-sky-400" />
+            <span className="text-sm font-bold text-white">Diff Viewer</span>
+            <span className="text-xs text-zinc-500 truncate max-w-xs">— {task.title}</span>
+            <span className="text-[10px] font-mono text-zinc-600 bg-[#131318] border border-[#1e1e26] px-2 py-0.5 rounded-md">
+              {task.branch}
+            </span>
+          </div>
         </div>
         <div className="flex items-center gap-2">
-          {task.ciStatus === 'passing' && (
+          {task.status === 'review' && task.ciStatus === 'passing' && (
             <>
               <button onClick={() => { mergeTask(task.id); closeDiff() }}
                 className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-bold rounded-lg transition-colors">
-                Merge PR #{task.prNumber}
+                Merge{task.prNumber ? ` #${task.prNumber}` : ''}
+              </button>
+              <button onClick={() => { discardTask(task.id); closeDiff() }}
+                className="px-3 py-1.5 bg-[#1a1a22] hover:bg-red-950/50 border border-[#2a2a32] hover:border-red-800/50 text-zinc-400 hover:text-red-400 text-xs font-semibold rounded-lg transition-colors">
+                Discard
+              </button>
+            </>
+          )}
+          {task.status === 'review' && task.ciStatus !== 'passing' && (
+            <>
+              <button onClick={() => { mergeTask(task.id); closeDiff() }}
+                className="px-3 py-1.5 bg-white hover:bg-zinc-200 text-black text-xs font-bold rounded-lg transition-colors">
+                Merge anyway
               </button>
               <button onClick={() => { discardTask(task.id); closeDiff() }}
                 className="px-3 py-1.5 bg-[#1a1a22] hover:bg-red-950/50 border border-[#2a2a32] hover:border-red-800/50 text-zinc-400 hover:text-red-400 text-xs font-semibold rounded-lg transition-colors">

@@ -1,9 +1,20 @@
 import { useState, useEffect, useRef } from 'react';
-import { Search, Plus, Layout, GitBranch, Terminal, Monitor, Settings } from 'lucide-react';
+import { Search, Plus, Layout, GitBranch, Terminal, Monitor, Settings, Wrench, Key, OctagonAlert, Shield, FolderPlus } from 'lucide-react';
 import { useFleetStore } from '../../store/fleetStore';
 
 export default function CommandPalette() {
-  const { setShowCommandPalette, setShowNewTaskModal, setCurrentPage, setShowWorkerPanel } = useFleetStore();
+  const {
+    setShowCommandPalette,
+    setShowNewTaskModal,
+    setCurrentPage,
+    setShowWorkerPanel,
+    setShowToolSetupModal,
+    setShowOrchestrator,
+    setShowProjectSetupModal,
+    killAll,
+    approvalMode,
+    setApprovalMode,
+  } = useFleetStore();
   const [search, setSearch] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -11,9 +22,15 @@ export default function CommandPalette() {
   const allCommands = [
     { id: 'new-task', title: 'Create new task', icon: Plus, action: () => setShowNewTaskModal(true) },
     { id: 'dashboard', title: 'Dashboard', icon: Layout, action: () => setCurrentPage('dashboard') },
+    { id: 'tool-setup', title: 'CLI Tool Setup & Diagnostics', icon: Wrench, action: () => setShowToolSetupModal(true) },
+    { id: 'orchestrator', title: 'Orchestrator Credentials & Auth', icon: Key, action: () => setShowOrchestrator(true) },
+    { id: 'new-project', title: 'Create or Open Project', icon: FolderPlus, action: () => setShowProjectSetupModal(true) },
+    { id: 'approval-mode', title: `Toggle Approval Mode (${approvalMode ? 'ON' : 'OFF'})`, icon: Shield, action: () => setApprovalMode(!approvalMode) },
+    { id: 'kill-all', title: 'Kill All Active Agents', icon: OctagonAlert, action: () => void killAll() },
     { id: 'sessions', title: 'Open sessions', icon: Terminal, action: () => setCurrentPage('sessions') },
+    { id: 'projects', title: 'Open projects', icon: Monitor, action: () => setCurrentPage('projects') },
     { id: 'worktrees', title: 'Open worktrees', icon: GitBranch, action: () => setCurrentPage('worktrees') },
-    { id: 'prs', title: 'Open pull requests', icon: GitBranch, action: () => setCurrentPage('pullRequests') },
+    { id: 'prs', title: 'Open reviews', icon: GitBranch, action: () => setCurrentPage('pullRequests') },
     { id: 'workers', title: 'Show running workers', icon: Monitor, action: () => setShowWorkerPanel(true) },
     { id: 'settings', title: 'Settings', icon: Settings, action: () => setCurrentPage('settings') },
   ];
@@ -34,10 +51,14 @@ export default function CommandPalette() {
         setShowCommandPalette(false);
       } else if (e.key === 'ArrowDown') {
         e.preventDefault();
-        setSelectedIndex(prev => (prev + 1) % filteredCommands.length);
+        if (filteredCommands.length > 0) {
+          setSelectedIndex(prev => (prev + 1) % filteredCommands.length);
+        }
       } else if (e.key === 'ArrowUp') {
         e.preventDefault();
-        setSelectedIndex(prev => (prev - 1 + filteredCommands.length) % filteredCommands.length);
+        if (filteredCommands.length > 0) {
+          setSelectedIndex(prev => (prev - 1 + filteredCommands.length) % filteredCommands.length);
+        }
       } else if (e.key === 'Enter') {
         e.preventDefault();
         if (filteredCommands[selectedIndex]) {

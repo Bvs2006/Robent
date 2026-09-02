@@ -1,116 +1,62 @@
 # Application Name
 
-A brief description of what this application does and its purpose.
-
-## Table of Contents
-
-- [About](#about)
-- [Getting Started](#getting-started)
-- [Available Scripts](#available-scripts)
-- [Project Structure](#project-structure)
-- [Technologies](#technologies)
-- [Configuration](#configuration)
+Robent is a local Electron desktop app for orchestrating coding agents across isolated Git worktrees.
 
 ## About
 
-This application is built with React + TypeScript + Vite. It provides a modern development experience with hot module replacement (HMR), linting with Oxlint, and ready-to-use React Compiler configuration.
-
-The application follows best practices for type safety, component organization, and build performance.
+Create tasks, assign them to CLI agents (Claude Code, Codex, OpenCode, Aider, Antigravity), review diffs, and merge or discard results. Shared MCP servers, skills, and plugins sync into each agent worktree before a run.
 
 ## Getting Started
 
 ### Prerequisites
 
-- Node.js (v18 or higher)
-- npm, yarn, pnpm, or bun
+- Node.js 18+
+- npm
+- Git
+- At least one coding-agent CLI installed and authenticated
 
 ### Installation
 
 ```bash
 npm install
-# or
-yarn install
-# or
-pnpm install
-# or
-bun install
 ```
 
 ### Development
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-The app will be available at `http://localhost:5173`.
+This starts Vite and Electron together.
 
 ### Building for Production
 
 ```bash
 npm run build
-# or
-yarn build
-# or
-pnpm build
-# or
-bun build
 ```
 
 ## Available Scripts
 
 | Script | Description |
 |--------|-------------|
-| `dev` | Start development server with HMR |
-| `build` | Build for production |
-| `lint` | Run Oxlint to check code quality |
-| `preview` | Preview production build locally |
+| `dev` | Start Electron + Vite with HMR |
+| `build` | Typecheck, build renderer/main, package with electron-builder |
+| `lint` | Run Oxlint |
+| `preview` | Preview the renderer build |
 
 ## Project Structure
 
 ```
-src/
-  ├── components/   # Reusable UI components
-  ├── pages/        # Page components
-  ├── hooks/        # Custom React hooks
-  ├── utils/        # Utility functions
-  ├── styles/       # Global styles
-  └── types/        # TypeScript type definitions
+electron/   # Main process: SQLite, IPC, drivers, git worktrees
+src/        # React renderer: board, sessions, projects, settings
 ```
 
 ## Technologies
 
-- **React** - UI library
-- **TypeScript** - Type safety
-- **Vite** - Build tool and dev server
-- **Oxlint** - Linting with type-aware rules
-- **React Compiler** - Optional compilation optimizations
-
-## Configuration
-
-### Oxlint
-
-To enable type-aware linting, install `oxlint-tsgolint` and configure `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
-```
-
-### React Compiler
-
-The React Compiler is not enabled by default due to performance considerations. To add it, see the [React Compiler documentation](https://react.dev/learn/react-compiler/installation).
+- Electron
+- React + TypeScript + Vite
+- Zustand
+- Tailwind CSS
+- better-sqlite3
+- simple-git
+- node-pty / xterm

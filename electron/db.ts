@@ -10,9 +10,11 @@ import { join } from 'path'
 import { app } from 'electron'
 import { mkdirSync } from 'fs'
 
-let db: Database.Database
+type SqliteDatabase = InstanceType<typeof Database>
 
-export function getDb(): Database.Database {
+let db: SqliteDatabase
+
+export function getDb(): SqliteDatabase {
   if (!db) {
     const userDataPath = app.getPath('userData')
     mkdirSync(userDataPath, { recursive: true })
@@ -149,6 +151,31 @@ function initSchema() {
       secret_encrypted TEXT NOT NULL,
       created_at TEXT DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS driver_quota (
+      driver_id TEXT PRIMARY KEY,
+      error_count INTEGER DEFAULT 0,
+      last_error_at TEXT,
+      reset_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS task_outcomes (
+      id TEXT PRIMARY KEY,
+      driver_id TEXT NOT NULL,
+      task_type TEXT NOT NULL,
+      success INTEGER NOT NULL,
+      timestamp TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS hooks (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      event TEXT NOT NULL,
+      command TEXT NOT NULL,
+      scope TEXT NOT NULL DEFAULT 'global',
+      enabled INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
   `)
 
   ensureColumn('mcp_servers', 'transport', "transport TEXT DEFAULT 'stdio'")
@@ -164,6 +191,67 @@ function initSchema() {
   ensureColumn('plugins', 'version', "version TEXT DEFAULT ''")
   ensureColumn('plugins', 'enabled', 'enabled INTEGER DEFAULT 1')
   ensureColumn('plugins', 'is_enabled', 'is_enabled INTEGER DEFAULT 1')
+
+  ensureColumn('credentials', 'secret_encrypted', "secret_encrypted TEXT DEFAULT ''")
+  ensureColumn('jobs', 'skill_ids', "skill_ids TEXT DEFAULT '[]'")
+  ensureColumn('jobs', 'changes', 'changes INTEGER DEFAULT 0')
+  ensureColumn('jobs', 'execution_mode', "execution_mode TEXT DEFAULT 'auto'")
+  ensureColumn('jobs', 'custom_agent_pool', "custom_agent_pool TEXT DEFAULT '[]'")
+  ensureColumn('jobs', 'subtasks', "subtasks TEXT DEFAULT '[]'")
+  ensureColumn('jobs', 'is_blocked', 'is_blocked INTEGER DEFAULT 0')
+  ensureColumn('jobs', 'blocked_reason', "blocked_reason TEXT DEFAULT ''")
+  ensureColumn('jobs', 'plan_approved', 'plan_approved INTEGER DEFAULT 0')
+  ensureColumn('terminal_lines', 'subtask_id', "subtask_id TEXT DEFAULT ''")
+  ensureColumn('terminal_lines', 'agent', "agent TEXT DEFAULT ''")
+}
+
+const JOB_COLUMNS = new Set([
+  'title', 'description', 'status', 'priority', 'agent', 'branch', 'worktree',
+  'pr_number', 'ci_status', 'runtime', 'started_at', 'completed_at', 'failed_tests',
+  'sub_status', 'token_count', 'estimated_cost', 'diff', 'skill_ids', 'changes',
+  'execution_mode', 'custom_agent_pool', 'subtasks', 'is_blocked', 'blocked_reason',
+  'plan_approved',
+])
+
+function sanitizeFields(fields: Record<string, any>, allowed: Set<string>): Record<string, any> {
+  const next: Record<string, any> = {}
+  for (const [key, value] of Object.entries(fields)) {
+    if (allowed.has(key)) next[key] = value
+  }
+  return next
+}
+
+// ─── Driver Quota & Task Outcome Tracking ────────────────────────────────
+export function recordDriverQuotaError(driverId: string): void {
+  const now = new Date().toISOString()
+  const db = getDb()
+  const existing = db.prepare('SELECT error_count FROM driver_quota WHERE driver_id = ?').get(driverId) as { error_count: number } | undefined
+  if (existing) {
+    db.prepare('UPDATE driver_quota SET error_count = error_count + 1, last_error_at = ? WHERE driver_id = ?').run(now, driverId)
+  } else {
+    db.prepare('INSERT INTO driver_quota (driver_id, error_count, last_error_at) VALUES (?, 1, ?)').run(driverId, now)
+  }
+}
+
+export function getDriverQuotaErrors(driverId: string): number {
+  const db = getDb()
+  const row = db.prepare('SELECT error_count FROM driver_quota WHERE driver_id = ?').get(driverId) as { error_count: number } | undefined
+  return row ? row.error_count : 0
+}
+
+export function recordTaskOutcome(driverId: string, taskType: string, success: boolean): void {
+  const db = getDb()
+  const id = Math.random().toString(36).substring(2, 9)
+  db.prepare('INSERT INTO task_outcomes (id, driver_id, task_type, success, timestamp) VALUES (?, ?, ?, ?, ?)').run(
+    id, driverId, taskType, success ? 1 : 0, new Date().toISOString()
+  )
+}
+
+export function getDriverSuccessRate(driverId: string, taskType: string): number {
+  const db = getDb()
+  const row = db.prepare('SELECT COUNT(*) as total, SUM(success) as succeeded FROM task_outcomes WHERE driver_id = ? AND task_type = ?').get(driverId, taskType) as { total: number; succeeded: number } | undefined
+  if (!row || row.total === 0) return 0.8 // default baseline score
+  return row.succeeded / row.total
 }
 
 // ─── Job CRUD ──────────────────────────────────────────────────────────
@@ -173,10 +261,12 @@ export function createJob(job: {
   description: string
   agent: string
   priority: string
+  execution_mode?: string
+  custom_agent_pool?: string
 }): void {
   getDb()
-    .prepare(`INSERT INTO jobs (id, title, description, agent, priority, status) VALUES (?, ?, ?, ?, ?, 'planned')`)
-    .run(job.id, job.title, job.description, job.agent, job.priority)
+    .prepare(`INSERT INTO jobs (id, title, description, agent, priority, status, execution_mode, custom_agent_pool) VALUES (?, ?, ?, ?, ?, 'planned', ?, ?)`)
+    .run(job.id, job.title, job.description, job.agent, job.priority, job.execution_mode || 'auto', job.custom_agent_pool || '[]')
 }
 
 export function getJobs(): any[] {
@@ -188,13 +278,19 @@ export function getJob(id: string): any {
 }
 
 export function updateJob(id: string, fields: Record<string, any>): void {
-  const keys = Object.keys(fields)
+  const safe = sanitizeFields(fields, JOB_COLUMNS)
+  const keys = Object.keys(safe)
   if (keys.length === 0) return
   const setClause = keys.map((k) => `${k} = ?`).join(', ')
-  const values = Object.values(fields)
+  const values = Object.values(safe)
   getDb()
     .prepare(`UPDATE jobs SET ${setClause} WHERE id = ?`)
     .run(...values, id)
+}
+
+export function nextReviewNumber(): number {
+  const row = getDb().prepare(`SELECT MAX(pr_number) as m FROM jobs`).get() as { m: number | null }
+  return (row?.m || 0) + 1
 }
 
 export function deleteJob(id: string): void {
@@ -223,10 +319,12 @@ export function addTerminalLine(line: {
   jobId: string
   type: string
   content: string
+  subtaskId?: string
+  agent?: string
 }): void {
   getDb()
-    .prepare(`INSERT INTO terminal_lines (id, job_id, type, content) VALUES (?, ?, ?, ?)`)
-    .run(line.id, line.jobId, line.type, line.content)
+    .prepare(`INSERT INTO terminal_lines (id, job_id, type, content, subtask_id, agent) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(line.id, line.jobId, line.type, line.content, line.subtaskId || '', line.agent || '')
 }
 
 export function getTerminalLines(jobId: string): any[] {
@@ -286,10 +384,16 @@ export function getCredentials(): any[] {
   return getDb().prepare(`SELECT id, agent, label, is_active, created_at FROM credentials`).all()
 }
 
-export function addCredential(cred: { id: string; agent: string; label: string }): void {
+export function addCredential(cred: { id: string; agent: string; label: string; secretEncrypted?: string }): void {
   getDb()
-    .prepare(`INSERT INTO credentials (id, agent, label) VALUES (?, ?, ?)`)
-    .run(cred.id, cred.agent, cred.label)
+    .prepare(`INSERT INTO credentials (id, agent, label, secret_encrypted) VALUES (?, ?, ?, ?)`)
+    .run(cred.id, cred.agent, cred.label, cred.secretEncrypted || '')
+}
+
+export function getCredentialSecrets(): { id: string; agent: string; label: string; secret_encrypted: string }[] {
+  return getDb()
+    .prepare(`SELECT id, agent, label, secret_encrypted FROM credentials WHERE secret_encrypted IS NOT NULL AND secret_encrypted != ''`)
+    .all() as { id: string; agent: string; label: string; secret_encrypted: string }[]
 }
 
 export function deleteCredential(id: string): void {
@@ -489,15 +593,51 @@ export function seedDefaultData(): void {
     `## Electron Security Guidelines\n\n- Enable contextIsolation (contextIsolation: true)\n- Disable nodeIntegration in renderer (nodeIntegration: false)\n- Use contextBridge for safe IPC\n- Validate all IPC input with Zod\n- Never expose remote module\n- Use safeStorage for secrets\n- Avoid eval() and new Function()\n- Sanitize URLs before loading`,
     '["electron","security"]', 1)
 
-  // Seed default plugins
-  const insertPlugin = getDb().prepare(`INSERT OR IGNORE INTO plugins (id, name, type, command, args, env) VALUES (?, ?, ?, ?, ?, ?)`)
+  // Seed default plugins (disabled until the user opts in)
+  const insertPlugin = getDb().prepare(`INSERT OR IGNORE INTO plugins (id, name, type, command, args, env, enabled, is_enabled) VALUES (?, ?, ?, ?, ?, ?, 0, 0)`)
   insertPlugin.run('plugin-ruff', 'Ruff Linter', 'linter', 'uv', JSON.stringify(['run', 'ruff', 'check']), '{}')
-  insertPlugin.run('plugin-eslint', 'ESLint', 'linter', 'npx', JSON.stringify(['eslint']), '{}')
+  insertPlugin.run('plugin-eslint', 'ESLint', 'linter', 'npx', JSON.stringify(['eslint', '.']), '{}')
   insertPlugin.run('plugin-tsc', 'TypeScript Check', 'checker', 'npx', JSON.stringify(['tsc', '--noEmit']), '{}')
-  insertPlugin.run('plugin-prettier', 'Prettier Formatter', 'formatter', 'npx', JSON.stringify(['prettier', '--write']), '{}')
+  insertPlugin.run('plugin-prettier', 'Prettier Formatter', 'formatter', 'npx', JSON.stringify(['prettier', '--write', '.']), '{}')
   insertPlugin.run('plugin-tests', 'Test Runner', 'tester', 'npm', JSON.stringify(['test']), '{}')
-  insertPlugin.run('plugin-vitest', 'Vitest UI', 'tester', 'npx', JSON.stringify(['vitest', 'ui']), '{}')
+  insertPlugin.run('plugin-vitest', 'Vitest UI', 'tester', 'npx', JSON.stringify(['vitest', 'run']), '{}')
   insertPlugin.run('plugin-semgrep', 'Semgrep SAST', 'analyzer', 'semgrep', JSON.stringify(['--config=auto', '--json']), '{}')
   insertPlugin.run('plugin-codespell', 'Codespell Spellcheck', 'analyzer', 'codespell', JSON.stringify(['--skip=.git,node_modules,dist']), '{}')
-  insertPlugin.run('plugin-oxc', 'Oxc Linter', 'linter', 'npx', JSON.stringify(['@oxc-lang/oxc', 'lint']), '{}')
+  insertPlugin.run('plugin-oxc', 'Oxc Linter', 'linter', 'npx', JSON.stringify(['oxlint']), '{}')
+
+  // One-time migration: older builds seeded every plugin as enabled, which
+  // made every task fail CI on machines without those tools installed.
+  const migrated = getDb().prepare(`SELECT value FROM settings WHERE key = ?`).get('pluginsDefaultDisabled') as { value?: string } | undefined
+  if (migrated?.value !== 'true') {
+    getDb().prepare(`UPDATE plugins SET enabled = 0, is_enabled = 0 WHERE id LIKE 'plugin-%'`).run()
+    getDb().prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('pluginsDefaultDisabled', 'true')`).run()
+  }
+}
+
+// ─── Hooks ────────────────────────────────────────────────────────────
+export function getHooks(): any[] {
+  return getDb().prepare(`SELECT * FROM hooks ORDER BY created_at ASC`).all()
+}
+
+export function addHook(hook: { id: string; name: string; event: string; command: string; scope: string; enabled: number }): any[] {
+  getDb()
+    .prepare(`INSERT INTO hooks (id, name, event, command, scope, enabled) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(hook.id, hook.name, hook.event, hook.command, hook.scope || 'global', hook.enabled ?? 0)
+  return getHooks()
+}
+
+export function updateHook(id: string, fields: Record<string, any>): any[] {
+  const allowed = new Set(['name', 'event', 'command', 'scope', 'enabled'])
+  const clean = sanitizeFields(fields, allowed)
+  if (Object.keys(clean).length > 0) {
+    const setClause = Object.keys(clean).map((k) => `${k} = ?`).join(', ')
+    const values = [...Object.values(clean), id]
+    getDb().prepare(`UPDATE hooks SET ${setClause} WHERE id = ?`).run(...values)
+  }
+  return getHooks()
+}
+
+export function deleteHook(id: string): any[] {
+  getDb().prepare(`DELETE FROM hooks WHERE id = ?`).run(id)
+  return getHooks()
 }

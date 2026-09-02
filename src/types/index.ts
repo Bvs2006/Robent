@@ -19,6 +19,21 @@ export interface ToolStatusRecord {
   lastCheckedAt: string
 }
 
+export type ExecutionMode = 'auto' | 'custom'
+
+export interface SubTask {
+  id: string
+  title: string
+  description: string
+  capabilityTag: string
+  assignedAgent?: AgentName
+  status: 'planned' | 'working' | 'done' | 'failed' | 'blocked'
+  blockedReason?: string
+  rationale?: string
+  dependencyMode?: 'parallel' | 'sequential'
+  modelUsed?: string
+}
+
 export interface Task {
   id: string
   title: string
@@ -38,6 +53,28 @@ export interface Task {
   tokenCount?: number
   estimatedCost?: number
   diff?: string
+  changes?: number
+  executionMode?: ExecutionMode
+  customAgentPool?: AgentName[]
+  subtasks?: SubTask[]
+  isBlocked?: boolean
+  blockedReason?: string
+  planApproved?: boolean
+  pendingApproval?: { promptId: string; command: string; subtaskId?: string }
+  matchingHooks?: string[]
+}
+
+export type HookEvent = 'pre-task' | 'post-task' | 'pre-command' | 'post-command' | 'on-failure'
+export type HookScope = 'global' | 'claude-code' | 'codex' | 'opencode' | 'antigravity' | 'aider'
+
+export interface Hook {
+  id: string
+  name: string
+  event: HookEvent
+  command: string
+  scope: HookScope
+  enabled: boolean
+  createdAt?: string
 }
 
 export interface Worker {
@@ -133,6 +170,7 @@ export interface Settings {
   defaultTimeout: number
   approvalMode: boolean
   toolSetupCompleted?: boolean
+  defaultExecutionMode?: ExecutionMode
 }
 
 export interface Notification {
@@ -143,15 +181,6 @@ export interface Notification {
 }
 
 export type PageId = 'dashboard' | 'sessions' | 'settings' | 'worktrees' | 'pullRequests' | 'projects'
-
-export interface RaceEntry {
-  agent: AgentName
-  status: 'running' | 'done' | 'failed'
-  output: string
-  summary?: string
-  tokenCount?: number
-  cost?: number
-}
 
 // ─── Agent config ─────────────────────────────────────────────────────────────
 export const AGENT_CONFIGS: Record<AgentName, { color: string; dot: string; bg: string; border: string; label: string }> = {
@@ -174,22 +203,39 @@ declare global {
       getJob: (id: string) => Promise<any>
       createJob: (job: any) => Promise<any>
       updateJob: (id: string, fields: any) => Promise<any>
+      deleteJob: (id: string) => Promise<{ success: boolean; error?: string }>
       getActivities: () => Promise<any[]>
       getWorkers: () => Promise<any[]>
       getTerminalLines: (jobId: string) => Promise<any[]>
+      sendTaskInput: (taskId: string, data: string) => Promise<boolean>
       getToolStatuses: () => Promise<ToolStatusRecord[]>
       refreshToolStatuses: () => Promise<ToolStatusRecord[]>
       getToolSetupCompleted: () => Promise<{ completed: boolean }>
       setToolSetupCompleted: (completed: boolean) => Promise<{ completed: boolean }>
       saveToolSecret: (payload: { toolId: ToolId; label: string; secret: string }) => Promise<any>
-      runToolAction: (payload: { toolId: ToolId; kind: 'install' | 'auth'; secret?: string }) => Promise<any>
+      runToolAction: (payload: { toolId: ToolId; kind: 'install' | 'auth' | 'terminal'; secret?: string }) => Promise<any>
+      writeToolInput: (payload: { sessionId: string; data: string }) => Promise<{ ok: boolean }>
+      killToolSession: (sessionId: string) => Promise<{ ok: boolean }>
+      getToolAuthCapabilities: () => Promise<Array<{
+        toolId: ToolId
+        name: string
+        binary: string
+        supportsAuth: boolean
+        authCommand: string | null
+      }>>
       openExternal: (url: string) => Promise<any>
+      openNativeTerminal: () => Promise<void>
+      planTask: (payload: { description: string; mode?: ExecutionMode; customPool?: AgentName[] }) => Promise<any[]>
       runTask: (taskId: string, agent: string, workdir: string) => Promise<any>
+      retryTask: (taskId: string, feedback?: string) => Promise<any>
       cancelTask: (taskId: string) => Promise<any>
+      setTaskExecutionMode: (taskId: string, mode: ExecutionMode) => Promise<any>
+      setTaskCustomPool: (taskId: string, pool: AgentName[]) => Promise<any>
       killAll: () => Promise<any>
-      runRace: (taskId: string, agents: string[], workdir: string) => Promise<any>
       mergeTask: (taskId: string) => Promise<any>
       discardTask: (taskId: string) => Promise<any>
+      createWorktree: (payload: { branchName: string; baseBranch?: string; workdir?: string }) => Promise<any>
+      listBranches: (workdir?: string) => Promise<{ current: string; all: string[] }>
       getMcpServers: () => Promise<any[]>
       getCapabilityRegistry: () => Promise<any>
       testMcpServerConnection: (server: any) => Promise<{ ok: boolean; message: string }>
@@ -210,7 +256,14 @@ declare global {
       togglePlugin: (id: string, enabled: boolean) => Promise<any[]>
       getProjects: () => Promise<any[]>
       getProject: (id: string) => Promise<any>
-      addProject: (project: any) => Promise<any>
+      addProject: (project: {
+        name: string
+        path: string
+        gitRemote?: string
+        createIfMissing?: boolean
+        gitInit?: boolean
+        setActive?: boolean
+      }) => Promise<any>
       deleteProject: (id: string) => Promise<any[]>
       setActiveProject: (id: string) => Promise<any[]>
       getSettings: () => Promise<any>
@@ -218,17 +271,25 @@ declare global {
       showOpenDialog: () => Promise<any>
       startPreviewServer: (taskId: string) => Promise<any>
       stopPreviewServer: (taskId: string) => Promise<any>
-      onTaskOutput: (cb: (taskId: string, chunk: string) => void) => void
-      onTaskDone: (cb: (taskId: string, result: any) => void) => void
-      onStateChanged: (cb: () => void) => void
-      onRuntimeTick: (cb: (runtimes: Record<string, number>) => void) => void
-      onRaceOutput: (cb: (taskId: string, agent: string, chunk: string) => void) => void
-      onRaceResult: (cb: (taskId: string, agent: string, result: any) => void) => void
-      onPreviewReady: (cb: (taskId: string, port: number, output: string) => void) => void
-      onToolOutput: (cb: (toolId: ToolId, sessionId: string, chunk: string) => void) => void
-      onToolActionStarted: (cb: (toolId: ToolId, sessionId: string, kind: 'install' | 'auth') => void) => void
-      onToolActionEnded: (cb: (toolId: ToolId, sessionId: string, exitCode: number, output: string) => void) => void
-      onToolStatusesChanged: (cb: (statuses: ToolStatusRecord[]) => void) => void
+      getHooks: () => Promise<Hook[]>
+      addHook: (hook: Omit<Hook, 'id'>) => Promise<Hook[]>
+      updateHook: (id: string, fields: Partial<Hook>) => Promise<Hook[]>
+      deleteHook: (id: string) => Promise<Hook[]>
+      toggleHook: (id: string, enabled: boolean) => Promise<Hook[]>
+      testHookCommand: (command: string) => Promise<{ ok: boolean; exitCode: number; output: string }>
+      approvePlan: (taskId: string) => Promise<any>
+      updateSubtaskAgent: (taskId: string, subtaskId: string, agent: AgentName) => Promise<any>
+      respondCommandApproval: (taskId: string, promptId: string, approve: boolean) => Promise<boolean>
+      onCommandApprovalRequested: (cb: (payload: { taskId: string; promptId: string; command: string }) => void) => () => void
+      onTaskOutput: (cb: (taskId: string, chunk: string) => void) => () => void
+      onTaskDone: (cb: (taskId: string, result: any) => void) => () => void
+      onStateChanged: (cb: () => void) => () => void
+      onRuntimeTick: (cb: (runtimes: Record<string, number>) => void) => () => void
+      onPreviewReady: (cb: (taskId: string, port: number, output: string) => void) => () => void
+      onToolOutput: (cb: (toolId: ToolId, sessionId: string, chunk: string) => void) => () => void
+      onToolActionStarted: (cb: (toolId: ToolId, sessionId: string, kind: 'install' | 'auth' | 'terminal') => void) => () => void
+      onToolActionEnded: (cb: (toolId: ToolId, sessionId: string, exitCode: number, output: string) => void) => () => void
+      onToolStatusesChanged: (cb: (statuses: ToolStatusRecord[]) => void) => () => void
       removeAllListeners: (channel: string) => void
     }
   }

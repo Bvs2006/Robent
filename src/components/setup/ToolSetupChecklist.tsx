@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { CheckCircle2, Download, ExternalLink, LogIn, RefreshCcw, Sparkles } from 'lucide-react'
+import { CheckCircle2, Download, ExternalLink, LogIn, RefreshCcw, Sparkles, Terminal } from 'lucide-react'
 import { useFleetStore } from '../../store/fleetStore'
 import type { ToolId, ToolStatusRecord } from '../../types'
 import ToolTerminalPane from './ToolTerminalPane'
@@ -13,6 +13,7 @@ type ToolSessionState = {
 
 interface ToolSetupChecklistProps {
   variant: 'setup' | 'settings'
+  onClose?: () => void
 }
 
 const TOOL_ORDER: ToolId[] = ['claude-code', 'codex', 'antigravity', 'aider', 'opencode']
@@ -52,17 +53,24 @@ function statusLabel(status: ToolStatusRecord['authStatus']) {
   }
 }
 
-export default function ToolSetupChecklist({ variant }: ToolSetupChecklistProps) {
+export default function ToolSetupChecklist({ variant, onClose }: ToolSetupChecklistProps) {
   const { toolStatuses, setToolSetupCompleted, toolSetupCompleted } = useFleetStore()
   const [sessions, setSessions] = useState<Record<ToolId, ToolSessionState | undefined>>({} as Record<ToolId, ToolSessionState | undefined>)
   const [aiderSecretDraft, setAiderSecretDraft] = useState('')
   const [showAiderSecretInput, setShowAiderSecretInput] = useState(false)
   const [isCheckingStatuses, setIsCheckingStatuses] = useState(false)
+  const [checkElapsed, setCheckElapsed] = useState<number>(0)
+  const [lastCheckDuration, setLastCheckDuration] = useState<number | null>(null)
   const [setupError, setSetupError] = useState<string | null>(null)
 
   const refreshStatuses = useCallback(async () => {
     setIsCheckingStatuses(true)
     setSetupError(null)
+    setCheckElapsed(0)
+    const startTime = Date.now()
+    const timer = setInterval(() => {
+      setCheckElapsed((Date.now() - startTime) / 1000)
+    }, 100)
 
     try {
       const rows = await window.electronAPI?.refreshToolStatuses()
@@ -74,25 +82,31 @@ export default function ToolSetupChecklist({ variant }: ToolSetupChecklistProps)
     } catch (error) {
       setSetupError(error instanceof Error ? error.message : 'Tool status check failed.')
     } finally {
+      clearInterval(timer)
+      const duration = (Date.now() - startTime) / 1000
+      setCheckElapsed(duration)
+      setLastCheckDuration(duration)
       setIsCheckingStatuses(false)
     }
   }, [])
 
   useEffect(() => {
-    refreshStatuses()
+    if (useFleetStore.getState().toolStatuses.length === 0) {
+      refreshStatuses()
+    }
 
-    window.electronAPI?.onToolStatusesChanged((rows) => {
+    const unsubStatuses = window.electronAPI?.onToolStatusesChanged((rows) => {
       useFleetStore.setState({ toolStatuses: rows })
     })
 
-    window.electronAPI?.onToolActionStarted((toolId, sessionId, kind) => {
+    const unsubActionStarted = window.electronAPI?.onToolActionStarted((toolId, sessionId, kind) => {
       setSessions((current) => ({
         ...current,
         [toolId]: { sessionId, kind, output: '', running: true },
       }))
     })
 
-    window.electronAPI?.onToolOutput((toolId, sessionId, chunk) => {
+    const unsubOutput = window.electronAPI?.onToolOutput((toolId, sessionId, chunk) => {
       setSessions((current) => {
         const existing = current[toolId]
         if (!existing || existing.sessionId !== sessionId) return current
@@ -103,7 +117,7 @@ export default function ToolSetupChecklist({ variant }: ToolSetupChecklistProps)
       })
     })
 
-    window.electronAPI?.onToolActionEnded((toolId, sessionId, _exitCode, _output) => {
+    const unsubActionEnded = window.electronAPI?.onToolActionEnded((toolId, sessionId, _exitCode, _output) => {
       setSessions((current) => {
         const existing = current[toolId]
         if (!existing || existing.sessionId !== sessionId) return current
@@ -116,10 +130,10 @@ export default function ToolSetupChecklist({ variant }: ToolSetupChecklistProps)
     })
 
     return () => {
-      window.electronAPI?.removeAllListeners('tool-statuses-changed')
-      window.electronAPI?.removeAllListeners('tool-action-started')
-      window.electronAPI?.removeAllListeners('tool-output')
-      window.electronAPI?.removeAllListeners('tool-action-ended')
+      unsubStatuses?.()
+      unsubActionStarted?.()
+      unsubOutput?.()
+      unsubActionEnded?.()
     }
   }, [refreshStatuses])
 
@@ -197,6 +211,7 @@ export default function ToolSetupChecklist({ variant }: ToolSetupChecklistProps)
 
   const handleContinue = async () => {
     await setToolSetupCompleted(true)
+    if (onClose) onClose()
   }
 
   return (
@@ -212,14 +227,21 @@ export default function ToolSetupChecklist({ variant }: ToolSetupChecklistProps)
             Install or sign in to tools below. The orchestrator will automatically route engineering tickets to your ready CLI drivers.
           </p>
         </div>
-        <button
-          onClick={refreshStatuses}
-          disabled={isCheckingStatuses}
-          className="inline-flex items-center gap-2 rounded-lg border border-[#24242b] bg-[#111115] px-3 py-2 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-[#16161b] disabled:opacity-50 transition-colors"
-        >
-          <RefreshCcw className={`w-3.5 h-3.5 ${isCheckingStatuses ? 'animate-spin' : ''}`} />
-          {isCheckingStatuses ? 'Checking...' : 'Recheck Status'}
-        </button>
+        <div className="flex items-center gap-3 shrink-0">
+          {lastCheckDuration !== null && !isCheckingStatuses && (
+            <span className="text-[11px] text-zinc-500 font-mono">
+              Checked in {lastCheckDuration.toFixed(1)}s
+            </span>
+          )}
+          <button
+            onClick={refreshStatuses}
+            disabled={isCheckingStatuses}
+            className="inline-flex items-center gap-2 rounded-lg border border-[#24242b] bg-[#111115] px-3 py-2 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-[#16161b] disabled:opacity-50 transition-colors"
+          >
+            <RefreshCcw className={`w-3.5 h-3.5 ${isCheckingStatuses ? 'animate-spin text-sky-400' : ''}`} />
+            {isCheckingStatuses ? `Checking (${checkElapsed.toFixed(1)}s)...` : 'Recheck Status'}
+          </button>
+        </div>
       </div>
 
       {setupError && (
@@ -284,20 +306,33 @@ export default function ToolSetupChecklist({ variant }: ToolSetupChecklistProps)
 
                   {/* Sign In button */}
                   {isInstalled && (
-                    <button
-                      onClick={() => runSignIn(toolId)}
-                      disabled={session?.running}
-                      className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-bold transition-colors disabled:opacity-50 ${
-                        isReady
-                          ? 'bg-emerald-950/40 text-emerald-300 border border-emerald-800/60'
-                          : isInstalled
-                            ? 'bg-amber-500 text-amber-950 hover:bg-amber-400'
-                            : 'bg-[#1e1e26] border border-[#2e2e38] text-zinc-200 hover:bg-[#252530]'
-                      }`}
-                    >
-                      {isReady ? <CheckCircle2 className="w-3.5 h-3.5" /> : <LogIn className="w-3.5 h-3.5" />}
-                      {session?.running && session.kind === 'auth' ? 'Signing in...' : isReady ? 'Ready' : 'Sign in'}
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => runSignIn(toolId)}
+                        disabled={session?.running}
+                        className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-bold transition-colors disabled:opacity-50 ${
+                          isReady
+                            ? 'bg-emerald-950/40 text-emerald-300 border border-emerald-800/60'
+                            : isInstalled
+                              ? 'bg-amber-500 text-amber-950 hover:bg-amber-400'
+                              : 'bg-[#1e1e26] border border-[#2e2e38] text-zinc-200 hover:bg-[#252530]'
+                        }`}
+                      >
+                        {isReady ? <CheckCircle2 className="w-3.5 h-3.5" /> : <LogIn className="w-3.5 h-3.5" />}
+                        {session?.running && session.kind === 'auth' ? 'Signing in...' : isReady ? 'Ready' : 'Sign in'}
+                      </button>
+
+                      {!isReady && (
+                        <button
+                          onClick={() => window.electronAPI?.openNativeTerminal()}
+                          className="inline-flex items-center gap-2 rounded-xl border border-[#24242b] bg-[#121216] px-3 py-2 text-xs font-medium text-zinc-400 hover:text-white hover:bg-[#18181f] transition-colors"
+                          title="Open native terminal to authenticate manually"
+                        >
+                          <Terminal className="w-3.5 h-3.5" />
+                          Terminal Auth
+                        </button>
+                      )}
+                    </div>
                   )}
 
                   {toolId === 'aider' && isInstalled && !isReady && showAiderSecretInput && (
@@ -332,7 +367,15 @@ export default function ToolSetupChecklist({ variant }: ToolSetupChecklistProps)
               )}
 
               <div className="px-4 pb-4">
-                <ToolTerminalPane output={session?.output || ''} visible={showTerminal} />
+                <ToolTerminalPane
+                  output={session?.output || ''}
+                  visible={showTerminal}
+                  interactive={Boolean(session?.running && session.kind === 'auth' && toolId !== 'aider')}
+                  onInput={(data) => {
+                    if (!session?.sessionId || session.sessionId.startsWith('pending-')) return
+                    window.electronAPI?.writeToolInput({ sessionId: session.sessionId, data })
+                  }}
+                />
               </div>
             </div>
           )

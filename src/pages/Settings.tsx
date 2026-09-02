@@ -13,7 +13,7 @@ export default function Settings() {
     settings, updateSettings, projectDirectory, setProjectDirectory, approvalMode, setApprovalMode,
     mcpServers, loadMcpServers, addMcpServer, deleteMcpServer,
     credentials, loadCredentials, addCredential, deleteCredential,
-    skills, loadSkills, addSkill, deleteSkill,
+    skills, loadSkills, addSkill, updateSkill, deleteSkill,
     plugins, loadPlugins, addPlugin, deletePlugin, togglePlugin,
     addNotification,
   } = useFleetStore();
@@ -68,18 +68,14 @@ export default function Settings() {
     await loadSkills();
   };
 
-  const handleEditSkill = async (_id?: string) => {
-    if (!skillForm.name || !skillForm.content) return;
-    if (editingSkill) {
-      // Update would go here - for now, delete + re-add
-      await deleteSkill(editingSkill.id);
-      await addSkill(skillForm);
-      setEditingSkill(null);
-    }
-    setSkillForm({ name: '', content: '' });
-    setShowAddSkill(false);
-    await loadSkills();
-  };
+  const handleEditSkill = async () => {
+    if (!skillForm.name || !skillForm.content || !editingSkill) return
+    await updateSkill(editingSkill.id, { name: skillForm.name, content: skillForm.content })
+    setEditingSkill(null)
+    setSkillForm({ name: '', content: '' })
+    setShowAddSkill(false)
+    await loadSkills()
+  }
 
   const handleAddPlugin = async () => {
     if (!pluginForm.name || !pluginForm.type) return;
@@ -164,6 +160,17 @@ export default function Settings() {
                     <option value="opencode">OpenCode</option>
                     <option value="antigravity">Antigravity</option>
                     <option value="custom">Custom</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-zinc-500 mb-1.5 block">Default Execution Mode</label>
+                  <select
+                    value={settings.defaultExecutionMode || 'auto'}
+                    onChange={(e) => handleChange('defaultExecutionMode', e.target.value)}
+                    className="bg-[#0f0f12] border border-[#1c1c22] rounded-md px-3 py-2 text-sm text-zinc-100 w-full max-w-md focus:border-purple-500 outline-none"
+                  >
+                    <option value="auto">Auto (Silent decomposition & smart driver scoring)</option>
+                    <option value="custom">Custom (User tool selection controls pool)</option>
                   </select>
                 </div>
               </div>
