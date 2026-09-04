@@ -18,6 +18,7 @@ import NotificationToast from './components/common/NotificationToast'
 import ToolSetupChecklist from './components/setup/ToolSetupChecklist'
 import OrchestratorAuthPanel from './components/setup/OrchestratorAuthPanel'
 import WorkerPanel from './components/workers/WorkerPanel'
+import ShortcutsModal from './components/common/ShortcutsModal'
 
 function App() {
   // Read stable primitives only — these change rarely, don't trigger frame-level re-renders
@@ -30,8 +31,17 @@ function App() {
   const showWorkerPanel    = useFleetStore((s) => s.showWorkerPanel)
   const showOrchestrator   = useFleetStore((s) => s.showOrchestrator)
   const showToolSetupModal = useFleetStore((s) => s.showToolSetupModal)
+  const showShortcutsModal = useFleetStore((s) => s.showShortcutsModal)
   const toolSetupCompleted = useFleetStore((s) => s.toolSetupCompleted)
+  const theme              = useFleetStore((s) => s.settings.theme)
   const [isBootstrapping, setIsBootstrapping] = useState(true)
+
+  // Sync theme to root documentElement
+  useEffect(() => {
+    const isLight = theme === 'light'
+    document.documentElement.classList.toggle('light', isLight)
+    document.documentElement.classList.toggle('dark', !isLight)
+  }, [theme])
 
   // Debounce full state refreshes so rapid state-changed bursts don't hammer the DB
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -89,13 +99,16 @@ function App() {
       })
     }
 
-    // Cmd/Ctrl+K → command palette
+    // Cmd/Ctrl+K → command palette, Cmd/Ctrl+N → new task
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault()
         useFleetStore.getState().setShowCommandPalette(
           !useFleetStore.getState().showCommandPalette
         )
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'n') {
+        e.preventDefault()
+        useFleetStore.getState().setShowNewTaskModal(true)
       }
     }
     window.addEventListener('keydown', onKey)
@@ -138,6 +151,7 @@ function App() {
       {showNewTaskModal    && <NewTaskModal />}
       {showProjectSetupModal && <ProjectSetupModal />}
       {showCommandPalette  && <CommandPalette />}
+      {showShortcutsModal  && <ShortcutsModal />}
       {showOrchestrator    && <OrchestratorAuthPanel />}
       {showWorkerPanel     && (
         <div className="fixed top-12 right-4 z-50">

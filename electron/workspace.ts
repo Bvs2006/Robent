@@ -1,7 +1,7 @@
 /**
  * Git worktree helpers used by task runs, merge, and discard.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'fs'
 import { join, resolve } from 'path'
 import { simpleGit } from 'simple-git'
 import type { SimpleGit } from 'simple-git'
@@ -59,6 +59,19 @@ export async function createIsolatedWorktree(
   mkdirSync(wtRoot, { recursive: true })
   const wtPath = join(wtRoot, folderName)
 
+  // Prune any stale disconnected worktrees first
+  await git.raw(['worktree', 'prune']).catch(() => undefined)
+
+  // If worktree target directory already exists, force cleanup to avoid collision
+  if (existsSync(wtPath)) {
+    await git.raw(['worktree', 'remove', '--force', wtPath]).catch(() => undefined)
+    try {
+      rmSync(wtPath, { recursive: true, force: true })
+    } catch {
+      /* ignore */
+    }
+  }
+
   // Clear any existing stale branch of the same name
   await git.deleteLocalBranch(branchName, true).catch(() => undefined)
 
@@ -72,6 +85,14 @@ export async function removeWorktree(worktree: string, branch?: string | null): 
   const repoRoot = await getMainRepoRoot(worktree).catch(() => resolve(worktree, '..', '..'))
   const git = simpleGit(repoRoot)
   await git.raw(['worktree', 'remove', '--force', worktree]).catch(() => undefined)
+  if (existsSync(worktree)) {
+    try {
+      rmSync(worktree, { recursive: true, force: true })
+    } catch {
+      /* ignore */
+    }
+  }
+  await git.raw(['worktree', 'prune']).catch(() => undefined)
   if (branch) {
     await git.deleteLocalBranch(branch, true).catch(() => undefined)
   }

@@ -139,13 +139,36 @@ export default function Settings() {
               <div className="space-y-4">
                 <div>
                   <label className="text-xs text-zinc-500 mb-1.5 block">Project Directory</label>
-                  <input
-                    type="text"
-                    value={projectDirectory || ''}
-                    onChange={(e) => setProjectDirectory(e.target.value)}
-                    className="bg-[#0f0f12] border border-[#1c1c22] rounded-md px-3 py-2 text-sm text-zinc-100 w-full max-w-md focus:border-purple-500 outline-none"
-                    placeholder="/path/to/project"
-                  />
+                  <div className="flex gap-2 max-w-md">
+                    <input
+                      type="text"
+                      value={projectDirectory || ''}
+                      onChange={(e) => {
+                        setProjectDirectory(e.target.value);
+                        handleChange('projectDirectory', e.target.value);
+                      }}
+                      className="bg-[#0f0f12] border border-[#1c1c22] rounded-md px-3 py-2 text-sm text-zinc-100 flex-1 focus:border-purple-500 outline-none"
+                      placeholder="/path/to/project"
+                    />
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (!window.electronAPI?.showOpenDialog) {
+                          addNotification('error', 'Folder picker is only available in the desktop app');
+                          return;
+                        }
+                        const result = await window.electronAPI.showOpenDialog();
+                        if (result?.filePaths?.[0]) {
+                          const dir = result.filePaths[0];
+                          setProjectDirectory(dir);
+                          handleChange('projectDirectory', dir);
+                        }
+                      }}
+                      className="px-3 py-2 bg-[#1c1c22] hover:bg-[#27272a] text-zinc-200 text-xs font-medium rounded-md border border-[#27272a] transition-colors"
+                    >
+                      Browse...
+                    </button>
+                  </div>
                 </div>
                 <div>
                   <label className="text-xs text-zinc-500 mb-1.5 block">Default Agent</label>

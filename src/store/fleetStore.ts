@@ -144,7 +144,7 @@ interface FleetState {
   planTasks: (description: string) => Promise<Task[]>
   addPlannedTasks: (tasks: Task[]) => Promise<void>
   startAllTasks: (taskIds: string[]) => Promise<void>
-  sendAgentFeedback: (taskId: string) => Promise<void>
+  sendAgentFeedback: (taskId: string, customFeedback?: string) => Promise<void>
   createWorktree: (branchName: string, baseBranch?: string) => Promise<void>
   setTaskExecutionMode: (taskId: string, mode: ExecutionMode) => Promise<void>
   setTaskCustomPool: (taskId: string, pool: AgentName[]) => Promise<void>
@@ -271,6 +271,8 @@ interface FleetState {
   setShowOrchestrator: (v: boolean) => void
   showToolSetupModal: boolean
   setShowToolSetupModal: (v: boolean) => void
+  showShortcutsModal: boolean
+  setShowShortcutsModal: (v: boolean) => void
 
   // Bulk
   loadAll: () => Promise<void>
@@ -464,21 +466,21 @@ export const useFleetStore = create<FleetState>((set, get) => ({
     get().addNotification('info', `${taskIds.length} agents started`)
   },
 
-  sendAgentFeedback: async (taskId) => {
+  sendAgentFeedback: async (taskId, customFeedback) => {
     if (!ipc) return
     const task = get().tasks.find(t => t.id === taskId)
     if (!task) return
-    const feedback = [
+    const feedback = customFeedback?.trim() || [
       task.subStatus,
       ...(task.failedTests || []),
-      'Please fix the failing checks and complete the original task.',
+      'Please fix the review issues and complete the original task.',
     ].filter(Boolean).join('\n')
     const result = await ipc.retryTask(taskId, feedback)
     if (result?.error) {
       get().addNotification('error', result.error)
       return
     }
-    get().addNotification('info', 'Feedback sent — agent retrying')
+    get().addNotification('info', 'Directive sent — agent retrying')
     await get().refreshAll()
   },
 
@@ -866,6 +868,8 @@ export const useFleetStore = create<FleetState>((set, get) => ({
   setShowOrchestrator: (v) => set({ showOrchestrator: v }),
   showToolSetupModal: false,
   setShowToolSetupModal: (v) => set({ showToolSetupModal: v }),
+  showShortcutsModal: false,
+  setShowShortcutsModal: (v) => set({ showShortcutsModal: v }),
 
   // Bulk load
   loadAll: async () => {

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Search, Plus, Layout, GitBranch, Terminal, Monitor, Settings, Wrench, Key, OctagonAlert, Shield, FolderPlus } from 'lucide-react';
+import { Search, Plus, Layout, GitBranch, Terminal, Monitor, Settings, Wrench, Key, OctagonAlert, Shield, FolderPlus, Keyboard } from 'lucide-react';
 import { useFleetStore } from '../../store/fleetStore';
 
 export default function CommandPalette() {
@@ -11,6 +11,7 @@ export default function CommandPalette() {
     setShowToolSetupModal,
     setShowOrchestrator,
     setShowProjectSetupModal,
+    setShowShortcutsModal,
     killAll,
     approvalMode,
     setApprovalMode,
@@ -22,6 +23,7 @@ export default function CommandPalette() {
   const allCommands = [
     { id: 'new-task', title: 'Create new task', icon: Plus, action: () => setShowNewTaskModal(true) },
     { id: 'dashboard', title: 'Dashboard', icon: Layout, action: () => setCurrentPage('dashboard') },
+    { id: 'shortcuts', title: 'Keyboard Shortcuts & Quick Help', icon: Keyboard, action: () => setShowShortcutsModal(true) },
     { id: 'tool-setup', title: 'CLI Tool Setup & Diagnostics', icon: Wrench, action: () => setShowToolSetupModal(true) },
     { id: 'orchestrator', title: 'Orchestrator Credentials & Auth', icon: Key, action: () => setShowOrchestrator(true) },
     { id: 'new-project', title: 'Create or Open Project', icon: FolderPlus, action: () => setShowProjectSetupModal(true) },

@@ -20,7 +20,7 @@ import { app, BrowserWindow, ipcMain, safeStorage, dialog, shell } from 'electro
 import type { ChildProcess } from 'child_process'
 import { existsSync, mkdirSync, readdirSync, statSync } from 'fs'
 import { simpleGit } from 'simple-git'
-import { spawn as childSpawn } from 'child_process'
+import { spawn as childSpawn, execSync } from 'child_process'
 
 import { createDriver } from './drivers.js'
 import type { BaseDriver } from './drivers.js'
@@ -125,7 +125,27 @@ if (!gotSingleInstanceLock) {
     }
   })
 
+  const cleanupPreviewServers = () => {
+    for (const [, server] of previewServers.entries()) {
+      if (process.platform === 'win32' && server.proc.pid) {
+        try {
+          execSync(`taskkill /PID ${server.proc.pid} /T /F`, { stdio: 'ignore' })
+        } catch {
+          /* ignore */
+        }
+      }
+      try {
+        server.proc.kill()
+      } catch {
+        /* ignore */
+      }
+    }
+    previewServers.clear()
+  }
+
+  app.on('before-quit', cleanupPreviewServers)
   app.on('window-all-closed', () => {
+    cleanupPreviewServers()
     if (process.platform !== 'darwin') { app.quit(); win = null }
   })
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
@@ -1000,7 +1020,18 @@ ipcMain.handle('start-preview-server', (_e, taskId: string) => {
 ipcMain.handle('stop-preview-server', (_e, taskId: string) => {
   const existing = previewServers.get(taskId)
   if (existing) {
-    existing.proc.kill()
+    if (process.platform === 'win32' && existing.proc.pid) {
+      try {
+        execSync(`taskkill /PID ${existing.proc.pid} /T /F`, { stdio: 'ignore' })
+      } catch {
+        /* ignore if process already terminated */
+      }
+    }
+    try {
+      existing.proc.kill()
+    } catch {
+      /* ignore */
+    }
     previewServers.delete(taskId)
   }
   return { success: true }

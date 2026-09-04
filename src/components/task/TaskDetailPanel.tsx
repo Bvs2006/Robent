@@ -348,12 +348,17 @@ export const TaskDetailPanel = () => {
                 )}
               </div>
 
-              {(task.ciStatus === 'failed' || task.ciStatus === 'pending') && (
-                <button onClick={() => sendAgentFeedback(task.id)}
-                  className="w-full py-2.5 bg-red-950/80 hover:bg-red-900 border border-red-800 text-red-200 font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition-colors">
-                  <RotateCcw className="w-3.5 h-3.5" /> Request Changes
-                </button>
-              )}
+              <button
+                onClick={() => {
+                  const input = window.prompt('Enter instructions/feedback for the agent (leave blank to auto-submit check failures):', '')
+                  if (input !== null) {
+                    void sendAgentFeedback(task.id, input)
+                  }
+                }}
+                className="w-full py-2.5 bg-amber-950/60 hover:bg-amber-900/80 border border-amber-800/60 text-amber-200 font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition-colors"
+              >
+                <RotateCcw className="w-3.5 h-3.5" /> Request Changes
+              </button>
 
               <button onClick={() => openTerminal(task.id)}
                 className="w-full py-2 bg-[#131318] hover:bg-[#1a1a22] border border-[#1e1e26] text-sky-300 text-[11px] font-semibold rounded-xl flex items-center justify-center gap-2 transition-colors">
