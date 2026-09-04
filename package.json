@@ -10,6 +10,7 @@
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
+    "start": "electron .",
     "build": "tsc -b && vite build && electron-builder",
     "lint": "oxlint",
     "preview": "vite preview"
