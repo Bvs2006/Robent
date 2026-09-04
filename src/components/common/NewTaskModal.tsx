@@ -1,453 +1,412 @@
 import { useState } from 'react';
-import { X, ArrowRight, Bot, Layers, Sparkles, Cpu, FolderOpen, RefreshCw, Trash2, RotateCcw } from 'lucide-react';
+import {
+  X,
+  ArrowRight,
+  Sparkles,
+  ChevronDown,
+  Layers,
+  Flame,
+  Check,
+} from 'lucide-react';
 import { useFleetStore } from '../../store/fleetStore';
 import ProjectSetupForm from './ProjectSetupForm';
-import type { Task } from '../../types';
+import type { Task, AgentName } from '../../types';
 
 export default function NewTaskModal() {
   const {
     setShowNewTaskModal,
     addPlannedTasks,
     startAllTasks,
+    startTask,
+    openTerminal,
     planTasks,
     toolStatuses,
     currentProject,
   } = useFleetStore();
-  const [step, setStep] = useState(1);
+
+  const [prompt, setPrompt] = useState('');
   const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
-  const [agentMode, setAgentMode] = useState<'auto' | 'manual'>('auto');
+  const [selectedAgent, setSelectedAgent] = useState<AgentName>('Claude Code');
+  const [selectedModel, setSelectedModel] = useState('Agent default');
+  const [collaborativeMode, setCollaborativeMode] = useState(false);
+  const [agentDropdownOpen, setAgentDropdownOpen] = useState(false);
+  const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
+
+  const [step, setStep] = useState<1 | 2 | 3>(1);
   const [planningStage, setPlanningStage] = useState(0);
   const [plannedSubtasks, setPlannedSubtasks] = useState<Task[]>([]);
   const [changingProject, setChangingProject] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  const needsProject = !currentProject || changingProject
+  const needsProject = !currentProject || changingProject;
 
-  // Get real installed agent names
-  const toolIdToLabel: Record<string, string> = {
-    'claude-code': 'Claude Code',
-    'codex': 'Codex',
-    'opencode': 'OpenCode',
-    'antigravity': 'Antigravity',
-    'aider': 'Aider',
-  }
-  const readyAgents = toolStatuses.filter(t => t.available).map(t => toolIdToLabel[t.toolId] || t.toolId)
-  const agentListText = readyAgents.length > 0
-    ? readyAgents.slice(0, 3).join(', ')
-    : 'Claude Code, OpenCode'
+  const agentList: Array<{ name: AgentName; ready: boolean; tag?: string }> = [
+    { name: 'Claude Code', ready: toolStatuses.some((t) => t.toolId === 'claude-code' && t.available) },
+    { name: 'Codex', ready: toolStatuses.some((t) => t.toolId === 'codex' && t.available) },
+    { name: 'OpenCode', ready: toolStatuses.some((t) => t.toolId === 'opencode' && t.available) },
+    { name: 'Antigravity', ready: toolStatuses.some((t) => t.toolId === 'antigravity' && t.available) },
+    { name: 'Aider', ready: toolStatuses.some((t) => t.toolId === 'aider' && t.available), tag: 'Needs API key' },
+    { name: 'Cursor', ready: false, tag: 'Needs install' },
+  ];
 
-  const handlePlanTicket = async () => {
-    if (!title.trim() || !currentProject || changingProject) return;
+  const models = [
+    'Agent default',
+    'claude-3-7-sonnet',
+    'gpt-4o',
+    'gpt-4o-mini',
+    'gemini-3.8-flash',
+  ];
 
-    if (agentMode === 'manual') {
-      const agent = (readyAgents[0] || 'Claude Code') as Task['agent']
-      const single: Task = {
-        id: `TASK-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`.toUpperCase(),
-        title: title.trim(),
-        description: description.trim() || title.trim(),
-        status: 'planned',
-        priority: 'normal',
-        agent,
-      }
-      setPlannedSubtasks([single])
-      setStep(3)
-      return
+  // Direct start or plan
+  const handleStartTask = async () => {
+    if (!prompt.trim() || !currentProject || changingProject) return;
+
+    if (collaborativeMode) {
+      // Decompose across multiple complementary CLIs
+      setStep(2);
+      setPlanningStage(1);
+      setTimeout(() => setPlanningStage(2), 700);
+      setTimeout(() => setPlanningStage(3), 1400);
+
+      const generated = await planTasks(prompt.trim());
+      setPlannedSubtasks(generated);
+      setTimeout(() => setStep(3), 2000);
+      return;
     }
 
-    setStep(2);
-    setPlanningStage(1);
-    setTimeout(() => setPlanningStage(2), 800);
-    setTimeout(() => setPlanningStage(3), 1600);
+    // Direct single-agent run
+    setBusy(true);
+    try {
+      const taskTitle = title.trim() || prompt.trim().split('\n')[0].slice(0, 60);
+      const taskId = `TASK-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`.toUpperCase();
+      const newTask: Task = {
+        id: taskId,
+        title: taskTitle,
+        description: prompt.trim(),
+        status: 'planned',
+        priority: 'normal',
+        agent: selectedAgent,
+      };
 
-    const generated = await planTasks(title + ' ' + description);
-    setPlannedSubtasks(generated);
-    setTimeout(() => setStep(3), 2400);
+      await addPlannedTasks([newTask]);
+      setShowNewTaskModal(false);
+      await startTask(taskId);
+      openTerminal(taskId);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const handleStartAll = async () => {
     if (!currentProject) {
-      setChangingProject(true)
-      setStep(1)
-      return
+      setChangingProject(true);
+      setStep(1);
+      return;
     }
-    setBusy(true)
+    setBusy(true);
     try {
       await addPlannedTasks(plannedSubtasks);
       await startAllTasks(plannedSubtasks.map((t) => t.id));
       setShowNewTaskModal(false);
+      if (plannedSubtasks.length > 0) {
+        openTerminal(plannedSubtasks[0].id);
+      }
     } finally {
-      setBusy(false)
-    }
-  };
-
-  const handleAddOnly = async () => {
-    if (!currentProject) {
-      setChangingProject(true)
-      setStep(1)
-      return
-    }
-    setBusy(true)
-    try {
-      await addPlannedTasks(plannedSubtasks);
-      setShowNewTaskModal(false);
-    } finally {
-      setBusy(false)
+      setBusy(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center modal-backdrop p-4">
-      <div className="bg-[#121215] border border-[#27272a] rounded-2xl w-[520px] max-h-[85vh] overflow-y-auto modal-content shadow-2xl">
+    <div className="fixed inset-0 bg-black/75 z-50 flex items-center justify-center modal-backdrop p-4">
+      <div className="bg-[#121215] border border-[#27272f] rounded-2xl w-[560px] max-h-[85vh] overflow-y-auto modal-content shadow-2xl">
         
         {/* Modal Header */}
-        <div className="px-6 py-4 border-b border-[#1f1f23] flex items-center justify-between">
+        <div className="px-6 py-4 border-b border-[#1f1f26] flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Layers className="w-5 h-5 text-sky-400" />
-            <h2 className="text-white font-bold text-base">Create Engineering Ticket</h2>
+            <h2 className="text-white font-bold text-base">Start Task with CLI Agents</h2>
           </div>
-          <button 
+          <button
             onClick={() => setShowNewTaskModal(false)}
             className="text-zinc-500 hover:text-white p-1 transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
-        
+
         {/* Modal Body */}
         <div className="px-6 py-5">
           {step === 1 && (
             <div className="space-y-4">
-
-              {/* Title first so scratch projects can reuse it as the folder name */}
-              <div>
-                <label className="block text-xs font-semibold text-zinc-300 mb-1.5 uppercase tracking-wider">
-                  Ticket Title
-                </label>
-                <input
-                  type="text"
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && title.trim() && !needsProject && handlePlanTicket()}
-                  placeholder="e.g. Build authentication system"
-                  className="w-full bg-[#18181b] border border-[#27272a] rounded-xl px-3.5 py-2.5 text-sm text-white focus:border-sky-500 outline-none transition-colors"
-                  autoFocus
-                />
-              </div>
-
-              {/* Project context */}
+              {/* Project selector if needed */}
               {needsProject ? (
-                <div className="rounded-xl border border-[#27272a] bg-[#0f0f12] p-4 space-y-3">
+                <div className="rounded-xl border border-[#27272f] bg-[#0f0f13] p-4 space-y-3">
                   <div>
                     <h3 className="text-sm font-bold text-white">
-                      {currentProject ? 'Switch project' : 'Where should this work live?'}
+                      {currentProject ? 'Switch project' : 'Where should this task run?'}
                     </h3>
                     <p className="text-[11px] text-zinc-500 mt-0.5">
-                      {currentProject
-                        ? 'Pick a different folder for this ticket.'
-                        : 'Add an existing folder, or create a new one from scratch. Later tasks reuse the active project.'}
+                      Select or create a project folder for this task.
                     </p>
                   </div>
                   <ProjectSetupForm
-                    suggestedName={title || undefined}
-                    defaultMode={currentProject ? 'existing' : 'create'}
-                    compact
-                    onCancel={currentProject ? () => setChangingProject(false) : undefined}
                     onComplete={() => setChangingProject(false)}
+                    onCancel={() => setChangingProject(false)}
                   />
                 </div>
               ) : (
-                <div className="flex items-center justify-between gap-3 rounded-xl border border-sky-800/40 bg-sky-950/20 px-3.5 py-2.5">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <FolderOpen className="w-3.5 h-3.5 text-sky-400 shrink-0" />
-                    <div className="min-w-0">
-                      <div className="text-[10px] text-sky-500 font-bold uppercase tracking-wider">Active project</div>
-                      <div className="text-xs text-sky-200 font-semibold truncate">{currentProject.name}</div>
-                      <div className="text-[10px] font-mono text-zinc-500 truncate">{currentProject.path}</div>
-                    </div>
+                <div className="flex items-center justify-between bg-[#17171d] border border-[#23232c] px-3.5 py-2 rounded-xl text-xs">
+                  <div className="flex items-center gap-2 truncate text-zinc-300">
+                    <span className="text-zinc-500 font-mono">Workspace:</span>
+                    <span className="font-bold text-sky-400 truncate">{currentProject?.name}</span>
                   </div>
                   <button
                     type="button"
                     onClick={() => setChangingProject(true)}
-                    className="shrink-0 flex items-center gap-1 text-[11px] text-zinc-400 hover:text-white px-2 py-1 rounded-lg hover:bg-[#1a1a22] transition-colors"
-                    title="Use a different project"
+                    className="text-xs text-zinc-400 hover:text-white font-semibold transition-colors shrink-0"
                   >
-                    <RefreshCw className="w-3 h-3" />
                     Change
                   </button>
                 </div>
               )}
 
-              {!needsProject && (
-                <>
-                  {/* Description Input */}
-                  <div>
-                    <label className="block text-xs font-semibold text-zinc-300 mb-1.5 uppercase tracking-wider">
-                      Requirement Description
-                    </label>
-                    <textarea
-                      value={description}
-                      onChange={(e) => setDescription(e.target.value)}
-                      placeholder="e.g. Build JWT auth with login, signup and automated testing"
-                      className="w-full bg-[#18181b] border border-[#27272a] rounded-xl p-3.5 text-sm text-white resize-none h-24 focus:border-sky-500 outline-none transition-colors"
-                    />
-                  </div>
-
-                  {/* Agent Mode Radio Selector */}
-                  <div>
-                    <label className="block text-xs font-semibold text-zinc-300 mb-2 uppercase tracking-wider">
-                      Agent Mode
-                    </label>
-                    <div className="grid grid-cols-2 gap-3">
-                      <label 
-                        className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
-                          agentMode === 'auto'
-                            ? 'bg-sky-950/30 border-sky-500 text-white'
-                            : 'bg-[#18181b] border-[#27272a] text-zinc-400 hover:border-zinc-700'
-                        }`}
-                      >
-                        <input 
-                          type="radio" 
-                          name="agentMode" 
-                          checked={agentMode === 'auto'} 
-                          onChange={() => setAgentMode('auto')}
-                          className="mt-0.5 accent-sky-500" 
-                        />
-                        <div>
-                          <div className="text-xs font-bold flex items-center gap-1.5">
-                            <Bot className="w-3.5 h-3.5 text-sky-400" />
-                            Auto Assign Agents
-                          </div>
-                          <div className="text-[11px] text-zinc-400 mt-0.5">
-                            Planner breaks outcome into subtasks & assigns best available agents
-                          </div>
-                        </div>
-                      </label>
-
-                      <label 
-                        className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
-                          agentMode === 'manual'
-                            ? 'bg-sky-950/30 border-sky-500 text-white'
-                            : 'bg-[#18181b] border-[#27272a] text-zinc-400 hover:border-zinc-700'
-                        }`}
-                      >
-                        <input 
-                          type="radio" 
-                          name="agentMode" 
-                          checked={agentMode === 'manual'} 
-                          onChange={() => setAgentMode('manual')}
-                          className="mt-0.5 accent-sky-500" 
-                        />
-                        <div>
-                          <div className="text-xs font-bold flex items-center gap-1.5">
-                            <Cpu className="w-3.5 h-3.5" />
-                            Manual Assign
-                          </div>
-                          <div className="text-[11px] text-zinc-400 mt-0.5">
-                            Select specific AI engine for each subtask manually
-                          </div>
-                        </div>
-                      </label>
-                    </div>
-                  </div>
-
-                  {/* Ready agents pill */}
-                  {readyAgents.length > 0 && (
-                    <div className="flex items-center gap-2 bg-emerald-950/20 border border-emerald-800/30 rounded-xl px-3 py-2">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
-                      <span className="text-[11px] text-emerald-400">
-                        {readyAgents.length} agent{readyAgents.length > 1 ? 's' : ''} ready: <strong>{agentListText}</strong>
-                      </span>
-                    </div>
-                  )}
-                </>
-              )}
-
-            </div>
-          )}
-
-          {/* Planning Animation */}
-          {step === 2 && (
-            <div className="py-10 flex flex-col items-center justify-center space-y-5 text-center">
-              <div className="relative">
-                <div className="w-12 h-12 border-2 border-sky-500 border-t-transparent rounded-full animate-spin"></div>
-                <Sparkles className="w-5 h-5 text-sky-400 absolute inset-0 m-auto" />
-              </div>
-              
-              <div className="space-y-1">
-                <h3 className="text-white font-bold text-base">Planning...</h3>
-                <div className="text-xs text-sky-400 font-mono space-y-1">
-                  <p className={planningStage >= 1 ? 'opacity-100' : 'opacity-30'}>
-                    ✓ Breaking requirement into tasks...
-                  </p>
-                  <p className={planningStage >= 2 ? 'opacity-100' : 'opacity-30'}>
-                    ✓ Assigning to {agentListText}...
-                  </p>
-                  <p className={planningStage >= 3 ? 'opacity-100' : 'opacity-30'}>
-                    ✓ Preparing git worktrees under {currentProject?.name || 'project'}...
-                  </p>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Plan Breakdown Result */}
-          {step === 3 && (
-            <div className="space-y-4">
-              {currentProject && (
-                <div className="flex items-center gap-2 text-[11px] text-zinc-500">
-                  <FolderOpen className="w-3 h-3 text-sky-400" />
-                  <span>Will run in <span className="text-sky-300 font-semibold">{currentProject.name}</span></span>
-                </div>
-              )}
-              <div className="flex items-center justify-between bg-emerald-950/30 border border-emerald-800/40 rounded-xl p-3">
-                <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs uppercase tracking-wide">
-                  <Sparkles className="w-4 h-4" />
-                  <span>PLANNED — {plannedSubtasks.length} Subtask{plannedSubtasks.length !== 1 ? 's' : ''} Generated</span>
-                </div>
-                {plannedSubtasks.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setPlannedSubtasks([])}
-                    className="text-[11px] text-zinc-400 hover:text-red-400 flex items-center gap-1 transition-colors px-2 py-1 rounded-lg hover:bg-red-950/30"
-                    title="Delete all planned subtasks"
-                  >
-                    <Trash2 className="w-3 h-3" />
-                    Delete all
-                  </button>
-                )}
+              {/* Task Title (optional summary) */}
+              <div>
+                <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">
+                  Task Title (optional)
+                </label>
+                <input
+                  type="text"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder="e.g. Build a chess game"
+                  className="w-full bg-[#18181c] border border-[#282832] rounded-xl px-3.5 py-2.5 text-sm text-white focus:border-sky-500 outline-none transition-colors"
+                />
               </div>
 
-              {plannedSubtasks.length === 0 ? (
-                <div className="p-8 border border-dashed border-[#27272a] rounded-xl flex flex-col items-center justify-center text-center space-y-3">
-                  <p className="text-xs text-zinc-500">All planned subtasks have been deleted.</p>
+              {/* Prompt / Instructions Textarea matching Reference */}
+              <div>
+                <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">
+                  Instructions & Verification
+                </label>
+                <textarea
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  rows={5}
+                  placeholder="Describe what the agent should build, expected files, and verification steps..."
+                  className="w-full bg-[#18181c] border border-[#282832] rounded-xl p-3.5 text-sm text-white focus:border-sky-500 outline-none transition-colors resize-y font-mono placeholder:text-zinc-500"
+                  autoFocus
+                />
+              </div>
+
+              {/* Agent & Model Selectors Row matching Reference UI */}
+              <div className="grid grid-cols-2 gap-3 pt-1">
+                {/* Agent Dropdown */}
+                <div className="relative">
+                  <label className="block text-[11px] font-semibold text-zinc-400 mb-1">
+                    Agent
+                  </label>
                   <button
                     type="button"
                     onClick={() => {
-                      setStep(1)
-                      setPlannedSubtasks([])
+                      setAgentDropdownOpen(!agentDropdownOpen);
+                      setModelDropdownOpen(false);
                     }}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#18181b] border border-[#27272a] text-xs font-semibold text-zinc-300 hover:text-white transition-colors"
+                    className="w-full bg-[#18181c] border border-[#282832] rounded-xl px-3.5 py-2 text-xs font-semibold text-white flex items-center justify-between hover:border-zinc-700 transition-colors"
                   >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                    Start Over
+                    <div className="flex items-center gap-2 truncate">
+                      <Flame className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                      <span className="truncate">{selectedAgent}</span>
+                    </div>
+                    <ChevronDown className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
                   </button>
-                </div>
-              ) : (
-                <div className="space-y-2.5">
-                  {plannedSubtasks.map((st, i) => (
-                    <div key={st.id} className="bg-[#18181b] border border-[#27272a] rounded-xl p-3.5 flex items-center justify-between group">
-                      <div className="flex items-center gap-3 min-w-0 pr-2">
-                        <span className="w-6 h-6 rounded-full bg-zinc-800 text-zinc-400 text-xs flex items-center justify-center font-bold font-mono shrink-0">
-                          {i + 1}
-                        </span>
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <h4 className="text-xs font-bold text-white truncate">{st.title}</h4>
-                            <span className={`text-[8px] px-1.5 py-0.5 rounded font-mono uppercase font-bold ${(st as any).dependencyMode === 'sequential' ? 'bg-amber-950 text-amber-300 border border-amber-800' : 'bg-emerald-950 text-emerald-300 border border-emerald-800'}`}>
-                              {(st as any).dependencyMode || 'parallel'}
-                            </span>
-                          </div>
-                          <p className="text-[11px] text-zinc-400 line-clamp-1">{st.description}</p>
-                          <p className="text-[10px] text-sky-400/90 italic mt-0.5 font-mono truncate">
-                            {(st as any).rationale || `${st.agent}: optimal capability fit`}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <div className="bg-[#222226] border border-[#2e2e34] px-2.5 py-1 rounded-lg text-xs font-semibold text-purple-300">
-                          {agentMode === 'manual' ? (
-                            <select
-                              value={st.agent}
-                              onChange={(e) => {
-                                const agent = e.target.value as Task['agent']
-                                setPlannedSubtasks((prev) => prev.map((item) => item.id === st.id ? { ...item, agent } : item))
-                              }}
-                              className="bg-transparent outline-none"
-                            >
-                              {['Claude Code', 'OpenCode', 'Codex', 'Aider', 'Antigravity'].map((agent) => (
-                                <option key={agent} value={agent}>{agent}</option>
-                              ))}
-                            </select>
-                          ) : st.agent}
-                        </div>
+
+                  {agentDropdownOpen && (
+                    <div className="absolute left-0 right-0 top-full mt-1.5 bg-[#15151a] border border-[#2b2b36] rounded-xl shadow-2xl py-1.5 z-50 max-h-56 overflow-y-auto">
+                      {agentList.map((ag) => (
                         <button
+                          key={ag.name}
                           type="button"
-                          onClick={() => setPlannedSubtasks((prev) => prev.filter((item) => item.id !== st.id))}
-                          className="p-1 text-zinc-500 hover:text-red-400 hover:bg-red-950/40 rounded-lg border border-transparent hover:border-red-800/40 transition-colors"
-                          title="Delete this subtask"
-                          aria-label="Delete this subtask"
+                          onClick={() => {
+                            setSelectedAgent(ag.name);
+                            setAgentDropdownOpen(false);
+                          }}
+                          className={`w-full px-3 py-2 text-left text-xs flex items-center justify-between hover:bg-[#202028] transition-colors ${
+                            selectedAgent === ag.name ? 'text-sky-400 font-bold bg-[#1c1c24]' : 'text-zinc-300'
+                          }`}
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
+                          <div className="flex items-center gap-2">
+                            <span className={`w-2 h-2 rounded-full ${ag.ready ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
+                            <span>{ag.name}</span>
+                          </div>
+                          {ag.tag && (
+                            <span className="text-[10px] text-zinc-500 font-mono">{ag.tag}</span>
+                          )}
                         </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Model Dropdown */}
+                <div className="relative">
+                  <label className="block text-[11px] font-semibold text-zinc-400 mb-1">
+                    Model
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setModelDropdownOpen(!modelDropdownOpen);
+                      setAgentDropdownOpen(false);
+                    }}
+                    className="w-full bg-[#18181c] border border-[#282832] rounded-xl px-3.5 py-2 text-xs font-semibold text-white flex items-center justify-between hover:border-zinc-700 transition-colors"
+                  >
+                    <span className="truncate">{selectedModel}</span>
+                    <ChevronDown className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
+                  </button>
+
+                  {modelDropdownOpen && (
+                    <div className="absolute left-0 right-0 top-full mt-1.5 bg-[#15151a] border border-[#2b2b36] rounded-xl shadow-2xl py-1.5 z-50">
+                      {models.map((m) => (
+                        <button
+                          key={m}
+                          type="button"
+                          onClick={() => {
+                            setSelectedModel(m);
+                            setModelDropdownOpen(false);
+                          }}
+                          className={`w-full px-3 py-2 text-left text-xs flex items-center justify-between hover:bg-[#202028] transition-colors ${
+                            selectedModel === m ? 'text-sky-400 font-bold bg-[#1c1c24]' : 'text-zinc-300'
+                          }`}
+                        >
+                          <span>{m}</span>
+                          {selectedModel === m && <Check className="w-3.5 h-3.5" />}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Multi-CLI Collaboration Toggle */}
+              <div className="pt-2">
+                <label className="flex items-center gap-3 p-3 rounded-xl border border-[#23232c] bg-[#15151a] cursor-pointer hover:border-zinc-700 transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={collaborativeMode}
+                    onChange={(e) => setCollaborativeMode(e.target.checked)}
+                    className="rounded border-zinc-700 text-sky-500 focus:ring-0 focus:ring-offset-0 bg-[#1c1c24]"
+                  />
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                      <span className="text-xs font-bold text-white">Multi-CLI Orchestration</span>
+                    </div>
+                    <p className="text-[11px] text-zinc-400 mt-0.5">
+                      Decompose into subtasks (Core, UI, Tests) executed across complementary installed CLIs.
+                    </p>
+                  </div>
+                </label>
+              </div>
+            </div>
+          )}
+
+          {/* Step 2: Planning animation */}
+          {step === 2 && (
+            <div className="py-12 flex flex-col items-center justify-center space-y-4 text-center">
+              <div className="w-12 h-12 rounded-full border-2 border-sky-400 border-t-transparent animate-spin" />
+              <div>
+                <h3 className="text-sm font-bold text-white">Orchestrating CLI Subtasks...</h3>
+                <p className="text-xs text-zinc-500 mt-1">
+                  {planningStage === 1 && 'Analyzing architecture & requirements...'}
+                  {planningStage === 2 && 'Mapping subtasks to ready agent capabilities...'}
+                  {planningStage === 3 && 'Allocating isolated worktree environments...'}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Step 3: Planned Subtasks Breakdown */}
+          {step === 3 && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between bg-emerald-950/30 border border-emerald-800/40 rounded-xl p-3">
+                <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs">
+                  <Sparkles className="w-4 h-4" />
+                  <span>PLANNED — {plannedSubtasks.length} Subtasks Generated</span>
+                </div>
+              </div>
+
+              <div className="space-y-2.5 max-h-60 overflow-y-auto">
+                {plannedSubtasks.map((st, i) => (
+                  <div key={st.id} className="bg-[#18181c] border border-[#272730] rounded-xl p-3 flex items-center justify-between">
+                    <div className="flex items-center gap-2.5 min-w-0 pr-2">
+                      <span className="w-5 h-5 rounded-full bg-zinc-800 text-zinc-400 text-[11px] flex items-center justify-center font-bold font-mono shrink-0">
+                        {i + 1}
+                      </span>
+                      <div className="min-w-0">
+                        <h4 className="text-xs font-bold text-white truncate">{st.title}</h4>
+                        <p className="text-[11px] text-zinc-400 truncate">{st.description}</p>
                       </div>
                     </div>
-                  ))}
-                </div>
-              )}
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-[#24242c] text-purple-300 shrink-0">
+                      {st.agent}
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </div>
 
         {/* Modal Footer */}
-        {((step === 1 || step === 3) || needsProject) && (
-          <div className="px-6 py-4 border-t border-[#1f1f23] flex items-center justify-between gap-3">
-            {step === 3 && !needsProject ? (
-              <button 
+        <div className="px-6 py-4 border-t border-[#1f1f26] flex items-center justify-between gap-3 bg-[#0e0e11]">
+          {step === 3 ? (
+            <button
+              type="button"
+              onClick={() => {
+                setStep(1);
+                setPlannedSubtasks([]);
+              }}
+              className="text-xs text-zinc-500 hover:text-red-400 transition-colors"
+            >
+              Start Over
+            </button>
+          ) : <div />}
+
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setShowNewTaskModal(false)}
+              className="px-4 py-2 rounded-xl text-xs font-semibold border border-[#272730] text-zinc-400 hover:text-white hover:bg-[#18181c] transition-colors"
+            >
+              Cancel
+            </button>
+
+            {step === 1 && !needsProject && (
+              <button
                 type="button"
-                onClick={() => {
-                  setStep(1)
-                  setPlannedSubtasks([])
-                }}
-                className="px-3 py-2 rounded-xl text-xs font-semibold text-zinc-500 hover:text-red-400 hover:bg-red-950/30 transition-colors flex items-center gap-1.5"
-                title="Discard this generated plan"
+                onClick={handleStartTask}
+                disabled={!prompt.trim() || busy}
+                className="px-5 py-2 rounded-xl text-xs bg-sky-500 text-zinc-950 font-bold hover:bg-sky-400 transition-colors disabled:opacity-50 flex items-center gap-1.5 shadow-sm"
               >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Discard Plan</span>
+                <span>{collaborativeMode ? 'Plan & Assign' : 'Start Task'}</span>
+                <ArrowRight className="w-3.5 h-3.5" />
               </button>
-            ) : <div />}
+            )}
 
-            <div className="flex items-center gap-3">
-              <button 
-                onClick={() => setShowNewTaskModal(false)}
-                className="px-4 py-2 rounded-xl text-xs font-semibold border border-[#27272a] text-zinc-400 hover:text-white hover:bg-[#18181b] transition-colors"
+            {step === 3 && (
+              <button
+                type="button"
+                onClick={handleStartAll}
+                disabled={busy}
+                className="px-5 py-2 rounded-xl text-xs bg-emerald-500 text-zinc-950 font-bold hover:bg-emerald-400 transition-colors disabled:opacity-50 flex items-center gap-1.5 shadow-sm"
               >
-                Cancel
+                <span>Start All Agents</span>
+                <ArrowRight className="w-3.5 h-3.5" />
               </button>
-
-              {step === 1 && !needsProject && (
-                  <button 
-                    onClick={handlePlanTicket}
-                    disabled={!title.trim() || !currentProject}
-                    className="px-4 py-2 rounded-xl text-xs bg-sky-500 text-zinc-950 font-bold hover:bg-sky-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
-                  >
-                    <span>{agentMode === 'manual' ? 'Create Task' : 'Plan Ticket & Assign Agents'}</span>
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </button>
-              )}
-
-              {step === 3 && plannedSubtasks.length > 0 && (
-                <>
-                  <button 
-                    onClick={handleAddOnly}
-                    disabled={busy}
-                    className="px-4 py-2 rounded-xl text-xs border border-[#27272a] text-zinc-300 font-semibold hover:bg-[#18181b] transition-colors disabled:opacity-50"
-                  >
-                    Add to Board
-                  </button>
-                  <button 
-                    onClick={handleStartAll}
-                    disabled={busy}
-                    className="px-5 py-2 rounded-xl text-xs bg-emerald-500 text-zinc-950 font-bold hover:bg-emerald-400 transition-colors flex items-center gap-2 disabled:opacity-50"
-                  >
-                    <span>Start All Agents</span>
-                    <ArrowRight className="w-4 h-4" />
-                  </button>
-                </>
-              )}
-            </div>
+            )}
           </div>
-        )}
+        </div>
       </div>
     </div>
   );

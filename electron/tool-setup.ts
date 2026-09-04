@@ -1,5 +1,5 @@
 import { execa } from 'execa'
-import { spawn, type IPty } from 'node-pty'
+import { spawnPty, type IPty } from './pty.js'
 import * as os from 'os'
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
@@ -231,7 +231,7 @@ function runShellCommand(commandLine: string, workdir: string, onOutput: (chunk:
     ? ['/d', '/s', '/c', normalizedCommandLine]
     : ['-lc', normalizedCommandLine]
 
-  const ptyProcess = spawn(shell, shellArgs, {
+  const ptyProcess = spawnPty(shell, shellArgs, {
     name: 'xterm-color',
     cols: 120,
     rows: 40,

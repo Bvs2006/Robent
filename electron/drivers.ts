@@ -4,8 +4,8 @@
  * Each concrete driver spawns the actual CLI via node-pty.
  * All drivers normalize output to { status, summary, raw, tokenCount, cost }
  */
-import { spawn } from 'node-pty'
-import type { IPty } from 'node-pty'
+import { spawnPty } from './pty.js'
+import type { IPty } from './pty.js'
 import * as os from 'os'
 import { execSync } from 'child_process'
 import { toolEnv } from './tool-setup.js'
@@ -22,8 +22,10 @@ type OutputCallback = (chunk: string) => void
 
 function quoteArg(arg: string): string {
   if (os.platform() === 'win32') {
-    if (!/[\s&<>|^()"]/.test(arg)) return arg
-    return `"${arg.replace(/"/g, '\\"')}"`
+    // Replace newlines so cmd.exe /c doesn't split the command line
+    const sanitized = arg.replace(/\r\n/g, ' ').replace(/[\r\n]/g, ' ')
+    if (!/[\s&<>|^()"]/.test(sanitized)) return sanitized
+    return `"${sanitized.replace(/"/g, '\\"')}"`
   }
   if (/^[A-Za-z0-9_./:=+-]+$/.test(arg)) return arg
   return `'${arg.replace(/'/g, `'\\''`)}'`
@@ -75,7 +77,7 @@ export abstract class BaseDriver {
         resolve(result)
       }
 
-      this.ptyProcess = spawn(shell, shellArgs, {
+      this.ptyProcess = spawnPty(shell, shellArgs, {
         name: 'xterm-color',
         cols: 120,
         rows: 40,

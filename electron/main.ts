@@ -1017,6 +1017,44 @@ ipcMain.handle('list-branches', async (_e, workdir?: string) => {
   return listLocalBranches(dir)
 })
 
+ipcMain.handle('get-worktree-files', async (_e, taskId: string) => {
+  const job = getJob(taskId)
+  if (!job) return []
+  const targetDir = job.worktree || getProjects().find((p: any) => p.is_active === 1)?.path || '.'
+  try {
+    const git = simpleGit(targetDir)
+    const status = await git.status()
+    return status.files.map((f: any) => ({
+      path: f.path,
+      index: f.index,
+      working_dir: f.working_dir,
+    }))
+  } catch {
+    return []
+  }
+})
+
+ipcMain.handle('get-task-preview', async (_e, taskId: string) => {
+  const job = getJob(taskId)
+  if (!job) return null
+  const targetDir = job.worktree || getProjects().find((p: any) => p.is_active === 1)?.path || '.'
+  const running = previewServers.get(taskId)
+  if (running) {
+    return { url: `http://localhost:${running.port}`, port: running.port, type: 'server' }
+  }
+  try {
+    if (existsSync(targetDir)) {
+      const files = readdirSync(targetDir)
+      const html = files.find((f: string) => f.toLowerCase().endsWith('.html'))
+      if (html) {
+        const full = join(targetDir, html).replace(/\\/g, '/')
+        return { url: `file:///${full}`, file: html, type: 'file' }
+      }
+    }
+  } catch {}
+  return null
+})
+
 // ─── IPC: Preview Server (Phase I: Review Loop) ────────────────────────────────
 ipcMain.handle('start-preview-server', (_e, taskId: string) => {
   const job = getJob(taskId)

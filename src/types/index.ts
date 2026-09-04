@@ -236,6 +236,8 @@ declare global {
       discardTask: (taskId: string) => Promise<any>
       createWorktree: (payload: { branchName: string; baseBranch?: string; workdir?: string }) => Promise<any>
       listBranches: (workdir?: string) => Promise<{ current: string; all: string[] }>
+      getWorktreeFiles: (taskId: string) => Promise<Array<{ path: string; index: string; working_dir: string }>>
+      getTaskPreview: (taskId: string) => Promise<{ url: string; port?: number; file?: string; type: 'server' | 'file' } | null>
       getMcpServers: () => Promise<any[]>
       getCapabilityRegistry: () => Promise<any>
       testMcpServerConnection: (server: any) => Promise<{ ok: boolean; message: string }>
