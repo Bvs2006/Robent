@@ -1,4 +1,4 @@
-﻿name: Build and Release Robent
+name: Build and Release Robent
 
 on:
   push:
@@ -12,6 +12,8 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository
