@@ -460,7 +460,12 @@ async function startAgentRun(
     prompt,
     actualWorkdir,
     (chunk) => {
-      event.sender.send('task-output', taskId, chunk)
+      try {
+        event.sender.send('task-output', taskId, chunk)
+      } catch {
+        /* sender may have been closed/navigated */
+      }
+      emit('task-output', taskId, chunk)
       addTerminalLine({ id: genId(), jobId: taskId, type: 'output', content: chunk, agent })
 
       // Per-command approval pattern detection
@@ -468,7 +473,12 @@ async function startAgentRun(
         const promptId = genId()
         const cmdMatch = chunk.match(/(?:`|\$|command:)\s*([^\r\n`]+)/i)
         const command = cmdMatch ? cmdMatch[1].trim() : 'CLI Command Execution'
-        event.sender.send('command-approval-requested', { taskId, promptId, command })
+        try {
+          event.sender.send('command-approval-requested', { taskId, promptId, command })
+        } catch {
+          /* ignore */
+        }
+        emit('command-approval-requested', { taskId, promptId, command })
       }
     },
     buildAgentEnv(agent),

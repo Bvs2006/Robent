@@ -61,9 +61,8 @@ export abstract class BaseDriver {
       const isWin = os.platform() === 'win32'
       const shell = isWin ? 'cmd.exe' : 'bash'
       const fullCmd = [command, ...args.map(quoteArg)].join(' ')
-      // On Windows, node-pty auto-quotes array elements which breaks cmd.exe /s /c.
-      // Pass as a single joined string so node-pty passes it verbatim.
-      const shellArgs = isWin ? ['/d', '/s', '/c', `"${fullCmd}"`] : ['-lc', fullCmd]
+      // On Windows, pass fullCmd directly to /d /s /c without outer quotes so cmd.exe executes it properly
+      const shellArgs = isWin ? ['/d', '/s', '/c', fullCmd] : ['-lc', fullCmd]
       let settled = false
 
       const finish = (result: TaskResult) => {
