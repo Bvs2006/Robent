@@ -369,7 +369,7 @@ export const useFleetStore = create<FleetState>((set, get) => ({
       if (!ok) return
     }
 
-    const readyStatuses = get().toolStatuses.filter(t => t.available)
+    const readyStatuses = get().toolStatuses.filter(t => t.available || t.installed)
     const agentToolIdMap: Record<string, string> = {
       'Claude Code': 'claude-code',
       'Codex': 'codex',
@@ -389,11 +389,11 @@ export const useFleetStore = create<FleetState>((set, get) => ({
         'aider': 'Aider',
       }
       effectiveAgent = (toolIdToAgent[fallbackToolId] || task.agent) as typeof task.agent
-      get().addNotification('info', `${task.agent} not available — routing to ${effectiveAgent}`)
+      get().addNotification('info', `${task.agent} not installed — routing to ${effectiveAgent}`)
       await ipc.updateJob(taskId, { agent: effectiveAgent })
       set(s => ({ tasks: s.tasks.map(t => t.id === taskId ? { ...t, agent: effectiveAgent as typeof t.agent } : t) }))
     } else if (!agentIsReady && readyStatuses.length === 0) {
-      get().addNotification('error', 'No coding agents are ready. Open Tool Setup first.')
+      get().addNotification('error', 'No coding agents are installed. Open Tool Setup first.')
       get().setShowToolSetupModal(true)
       return
     }

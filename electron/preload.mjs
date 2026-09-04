@@ -102,7 +102,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('command-approval-requested', listener)
   },
   onTaskOutput: (cb) => {
-    const listener = (_e, taskId, chunk) => cb(taskId, chunk)
+    const listener = (_e, taskId, chunk, agent) => cb(taskId, chunk, agent)
     ipcRenderer.on('task-output', listener)
     return () => ipcRenderer.removeListener('task-output', listener)
   },

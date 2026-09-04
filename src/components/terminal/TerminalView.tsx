@@ -23,6 +23,35 @@ import { Terminal } from 'xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import 'xterm/css/xterm.css';
 
+interface CliTabDef {
+  id: string;
+  name: string;
+  icon: string;
+  desc: string;
+}
+
+const PRIMARY_CLIS: CliTabDef[] = [
+  { id: 'all', name: 'All CLIs', icon: '🌐', desc: 'Unified multi-CLI combined stream' },
+  { id: 'OpenCode', name: 'OpenCode', icon: '⚡', desc: 'Planning & full-stack reasoning' },
+  { id: 'Codex', name: 'Codex', icon: '🧠', desc: 'Fast code generation & fixes' },
+  { id: 'Antigravity', name: 'Antigravity', icon: '🚀', desc: 'Deep autonomous agentic workflows' },
+  { id: 'Claude Code', name: 'Claude Code', icon: '🟣', desc: 'Complex refactors & architecture' },
+  { id: 'Aider', name: 'Aider', icon: '🔨', desc: 'Git-integrated precise edits' },
+];
+
+function normalizeAgent(name?: string): string {
+  if (!name) return '';
+  const lower = name.toLowerCase().trim();
+  if (lower.includes('opencode')) return 'OpenCode';
+  if (lower.includes('codex')) return 'Codex';
+  if (lower.includes('antigravity') || lower === 'agy') return 'Antigravity';
+  if (lower.includes('claude')) return 'Claude Code';
+  if (lower.includes('aider')) return 'Aider';
+  if (lower.includes('cursor')) return 'Cursor';
+  if (lower.includes('copilot')) return 'GitHub Copilot';
+  return name;
+}
+
 export default function TerminalView() {
   const {
     terminalTaskId,
@@ -32,6 +61,7 @@ export default function TerminalView() {
     stopTask,
     mergeTask,
     activities,
+    workers,
   } = useFleetStore();
 
   const task = tasks.find((t) => t.id === terminalTaskId);
@@ -52,6 +82,11 @@ export default function TerminalView() {
   const [showSlashMenu, setShowSlashMenu] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [activeModel, setActiveModel] = useState(task?.model || 'claude-3-7-sonnet');
+
+  // Per-agent output buffers and status tracking
+  const agentOutputsRef = useRef<Record<string, string[]>>({ all: [] });
+  const [unreadMap, setUnreadMap] = useState<Record<string, number>>({});
+  const [outputCounts, setOutputCounts] = useState<Record<string, number>>({});
 
   // Supported model choices
   const AVAILABLE_MODELS = [
@@ -77,6 +112,51 @@ export default function TerminalView() {
     { cmd: '/restart', desc: 'Restart current task agent with fresh execution', action: 'restart' },
     { cmd: '/help', desc: 'Show all available CLI shortcuts & slash commands', action: 'help' },
   ];
+
+  // Check if a specific CLI is actively running on this task
+  const isCliRunning = (cliId: string) => {
+    if (cliId === 'all') {
+      return task?.status === 'working' || (workers || []).some((w) => w.taskId === terminalTaskId && w.status === 'running');
+    }
+    const norm = normalizeAgent(cliId);
+    if (task?.status === 'working' && normalizeAgent(task?.agent) === norm) return true;
+    return (workers || []).some((w) => w.taskId === terminalTaskId && w.status === 'running' && normalizeAgent(w.agent) === norm);
+  };
+
+  // Helper to render current selected buffer into xterm
+  const renderAgentBuffer = (filter: string, currentTask?: any) => {
+    if (!xtermRef.current) return;
+    xtermRef.current.reset();
+
+    const lines = agentOutputsRef.current[filter] || [];
+    if (lines.length > 0) {
+      for (const line of lines) {
+        xtermRef.current.write(line);
+      }
+    } else {
+      if (filter === 'all') {
+        xtermRef.current.writeln(`\x1b[1;36m┌─────────────────────────────────────────────────────────────┐\x1b[0m`);
+        xtermRef.current.writeln(`\x1b[1;36m│\x1b[0m  \x1b[1;37mRobent Unified Multi-CLI Console\x1b[0m                           \x1b[1;36m│\x1b[0m`);
+        xtermRef.current.writeln(`\x1b[1;36m│\x1b[0m  Task:   \x1b[33m${(currentTask?.title || terminalTaskId || '').slice(0, 48)}\x1b[0m`);
+        xtermRef.current.writeln(`\x1b[1;36m│\x1b[0m  Status: \x1b[32m${currentTask?.status || 'idle'}\x1b[0m`);
+        xtermRef.current.writeln(`\x1b[1;36m└─────────────────────────────────────────────────────────────┘\x1b[0m\r\n`);
+        xtermRef.current.writeln(`\x1b[38;5;244m[Unified stream · Logs from all active and subtask agents stream here]\x1b[0m\r\n`);
+      } else {
+        const isRunning = isCliRunning(filter);
+        xtermRef.current.writeln(`\x1b[1;35m┌─────────────────────────────────────────────────────────────┐\x1b[0m`);
+        xtermRef.current.writeln(`\x1b[1;35m│\x1b[0m  \x1b[1;37m${filter} CLI Dedicated Workspace\x1b[0m                       \x1b[1;35m│\x1b[0m`);
+        xtermRef.current.writeln(`\x1b[1;35m│\x1b[0m  Status: ${isRunning ? '\x1b[1;32m● Running (Executing task...)\x1b[0m' : '\x1b[38;5;244mStandby · Idle\x1b[0m'}`);
+        xtermRef.current.writeln(`\x1b[1;35m│\x1b[0m  Model:  \x1b[36m${activeModel}\x1b[0m`);
+        xtermRef.current.writeln(`\x1b[1;35m└─────────────────────────────────────────────────────────────┘\x1b[0m\r\n`);
+        if (isRunning) {
+          xtermRef.current.writeln(`\x1b[32m[${filter} is currently running on this task. Streaming output live...]\x1b[0m\r\n`);
+        } else {
+          xtermRef.current.writeln(`\x1b[38;5;244mNo terminal output recorded for ${filter} on this task yet.\x1b[0m`);
+          xtermRef.current.writeln(`\x1b[38;5;244mType a prompt below and press Enter, or click "Run with ${filter}" above to start.\x1b[0m\r\n`);
+        }
+      }
+    }
+  };
 
   // Initialize xterm.js instance
   useEffect(() => {
@@ -130,45 +210,80 @@ export default function TerminalView() {
 
     const currentTask = useFleetStore.getState().tasks.find((t) => t.id === terminalTaskId);
     window.electronAPI.getTerminalLines(terminalTaskId).then((lines: any[]) => {
-      const filteredLines = selectedAgentFilter === 'all'
-        ? (lines || [])
-        : (lines || []).filter((l) => l.agent?.toLowerCase() === selectedAgentFilter.toLowerCase());
+      const buffers: Record<string, string[]> = { all: [] };
+      const counts: Record<string, number> = { all: 0 };
 
-      if (xtermRef.current) {
-        xtermRef.current.reset();
-        if (filteredLines && filteredLines.length > 0) {
-          for (const line of filteredLines) {
-            xtermRef.current.write(line?.content || '');
-          }
-        } else {
-          xtermRef.current.writeln(`\x1b[38;5;244m[Robent CLI Workspace: ${currentTask?.title || terminalTaskId}]\x1b[0m`);
-          if (currentTask?.status === 'working') {
-            xtermRef.current.writeln(`\x1b[38;5;244m[Running agent: ${selectedAgentFilter === 'all' ? (currentTask?.agent || 'CLI') : selectedAgentFilter} · streaming output...]\x1b[0m\r\n`);
-          } else if (currentTask?.subStatus && currentTask.subStatus.toLowerCase().includes('error')) {
-            xtermRef.current.writeln(`\x1b[31m[Error: ${currentTask.subStatus}]\x1b[0m\r\n`);
-          } else {
-            xtermRef.current.writeln(`\x1b[38;5;244m[Status: ${currentTask?.status || 'idle'}]\x1b[0m\r\n`);
-          }
+      for (const line of lines || []) {
+        const chunk = line?.content || '';
+        buffers.all.push(chunk);
+        counts.all = (counts.all || 0) + 1;
+
+        const norm = normalizeAgent(line.agent);
+        if (norm) {
+          if (!buffers[norm]) buffers[norm] = [];
+          buffers[norm].push(chunk);
+          counts[norm] = (counts[norm] || 0) + 1;
         }
       }
+
+      agentOutputsRef.current = buffers;
+      setOutputCounts(counts);
+
+      renderAgentBuffer(selectedAgentFilter, currentTask);
     });
-  }, [terminalTaskId, selectedAgentFilter]);
+  }, [terminalTaskId]);
+
+  // When tab switches, clear unread and re-render that CLI's buffer
+  useEffect(() => {
+    const currentTask = useFleetStore.getState().tasks.find((t) => t.id === terminalTaskId);
+    setUnreadMap((prev) => ({ ...prev, [selectedAgentFilter]: 0 }));
+    renderAgentBuffer(selectedAgentFilter, currentTask);
+  }, [selectedAgentFilter]);
 
   // Live streaming output effect
   useEffect(() => {
     if (!terminalTaskId || !window.electronAPI) return;
 
-    const unsubscribe = window.electronAPI.onTaskOutput((jobId, chunk) => {
+    const unsubscribe = window.electronAPI.onTaskOutput((jobId, chunk, agent) => {
       if (jobId !== terminalTaskId) return;
-      if (xtermRef.current) {
-        xtermRef.current.write(chunk);
+
+      const normAgent = normalizeAgent(agent || task?.agent);
+
+      // Append to 'all'
+      if (!agentOutputsRef.current.all) agentOutputsRef.current.all = [];
+      agentOutputsRef.current.all.push(chunk);
+
+      // Append to specific agent
+      if (normAgent) {
+        if (!agentOutputsRef.current[normAgent]) agentOutputsRef.current[normAgent] = [];
+        agentOutputsRef.current[normAgent].push(chunk);
+      }
+
+      // Update counts
+      setOutputCounts((prev) => ({
+        ...prev,
+        all: (prev.all || 0) + 1,
+        ...(normAgent ? { [normAgent]: (prev[normAgent] || 0) + 1 } : {}),
+      }));
+
+      // Stream to terminal if this tab is active
+      if (selectedAgentFilter === 'all' || (normAgent && selectedAgentFilter.toLowerCase() === normAgent.toLowerCase())) {
+        if (xtermRef.current) {
+          xtermRef.current.write(chunk);
+        }
+      } else if (normAgent) {
+        // Increment unread count for that agent tab
+        setUnreadMap((prev) => ({
+          ...prev,
+          [normAgent]: (prev[normAgent] || 0) + 1,
+        }));
       }
     });
 
     return () => {
       unsubscribe?.();
     };
-  }, [terminalTaskId]);
+  }, [terminalTaskId, selectedAgentFilter, task?.agent]);
 
   // Fetch worktree files & preview info periodically while task is viewed
   useEffect(() => {
@@ -200,7 +315,21 @@ export default function TerminalView() {
   // Subtask drivers for filter tabs
   const subtasks = task?.subtasks || [];
   const subtaskDrivers = subtasks.map((st) => st.assignedAgent).filter(Boolean);
-  const availableDrivers = Array.from(new Set([task?.agent, ...subtaskDrivers].filter(Boolean))) as string[];
+  const additionalDrivers = Array.from(new Set([task?.agent, ...subtaskDrivers].filter(Boolean))) as string[];
+
+  // Combine primary CLIs with any custom additional drivers
+  const knownIds = new Set(PRIMARY_CLIS.map((c) => c.id.toLowerCase()));
+  const extraTabs = additionalDrivers
+    .filter((d) => !knownIds.has(d.toLowerCase()))
+    .map((d) => ({
+      id: d,
+      name: d,
+      icon: '🤖',
+      desc: `${d} execution logs`,
+    }));
+
+  const ALL_CLI_TABS = [...PRIMARY_CLIS, ...extraTabs];
+  const currentTabDef = ALL_CLI_TABS.find((c) => c.id === selectedAgentFilter) || ALL_CLI_TABS[0];
 
   // Task-specific activities
   const taskActivities = activities.filter((a) => (a as any).jobId === terminalTaskId || a.taskId === terminalTaskId || a.message.includes(task?.title || ''));
@@ -226,7 +355,28 @@ export default function TerminalView() {
     useFleetStore.getState().loadTasks();
   };
 
-  // Submit bottom input bar command (with full slash commands support)
+  // Launch a specific CLI on this task
+  const handleLaunchCli = async (agentName: string) => {
+    if (!terminalTaskId) return;
+    if (xtermRef.current) {
+      xtermRef.current.writeln(`\r\n\x1b[32m[Robent] Starting ${agentName} on task...\x1b[0m\r\n`);
+    }
+    if (window.electronAPI?.updateJob) {
+      await window.electronAPI.updateJob(terminalTaskId, { agent: agentName, model: activeModel });
+    }
+    await startTask(terminalTaskId);
+  };
+
+  // Stop currently running execution
+  const handleStopCli = async () => {
+    if (!terminalTaskId) return;
+    await stopTask(terminalTaskId);
+    if (xtermRef.current) {
+      xtermRef.current.writeln(`\r\n\x1b[31m[Robent] Stopped ${selectedAgentFilter} execution.\x1b[0m\r\n`);
+    }
+  };
+
+  // Submit bottom input bar command (with full slash commands support and per-CLI dispatch)
   const handleSendInput = async (e?: React.FormEvent) => {
     e?.preventDefault();
     const raw = inputCommand.trim();
@@ -325,12 +475,43 @@ export default function TerminalView() {
       }
     }
 
-    if (window.electronAPI?.sendTaskInput) {
-      window.electronAPI.sendTaskInput(terminalTaskId, inputCommand + '\r\n');
-      if (xtermRef.current) {
-        xtermRef.current.write(`\r\n\x1b[36m> ${inputCommand}\x1b[0m\r\n`);
+    // Normal interactive prompt / command dispatch
+    if (selectedAgentFilter !== 'all') {
+      const targetAgent = selectedAgentFilter;
+      const isRunning = isCliRunning(targetAgent);
+
+      if (isRunning) {
+        if (window.electronAPI?.sendTaskInput) {
+          window.electronAPI.sendTaskInput(terminalTaskId, raw + '\r\n');
+          if (xtermRef.current) {
+            xtermRef.current.write(`\r\n\x1b[36m❯ ${raw}\x1b[0m\r\n`);
+          }
+        }
+      } else {
+        const otherRunningWorker = (workers || []).find((w) => w.taskId === terminalTaskId && w.status === 'running' && normalizeAgent(w.agent) !== targetAgent);
+        const isOtherAgentRunning = task?.status === 'working' && normalizeAgent(task?.agent) !== targetAgent;
+        if (isOtherAgentRunning || otherRunningWorker) {
+          const busyAgent = task?.agent || otherRunningWorker?.agent || 'Another CLI';
+          xtermRef.current?.writeln(`\r\n\x1b[33m[Robent] ${busyAgent} is currently running on this task. Stop it first before launching ${targetAgent}.\x1b[0m\r\n`);
+        } else {
+          xtermRef.current?.writeln(`\r\n\x1b[32m[Robent] Launching ${targetAgent} on task "${task?.title || terminalTaskId}"...\x1b[0m\r\n`);
+          if (window.electronAPI?.updateJob) {
+            await window.electronAPI.updateJob(terminalTaskId, { agent: targetAgent, model: activeModel });
+          }
+          await startTask(terminalTaskId);
+        }
+      }
+    } else {
+      if (task?.status === 'working' && window.electronAPI?.sendTaskInput) {
+        window.electronAPI.sendTaskInput(terminalTaskId, raw + '\r\n');
+        if (xtermRef.current) {
+          xtermRef.current.write(`\r\n\x1b[36m❯ ${raw}\x1b[0m\r\n`);
+        }
+      } else {
+        await startTask(terminalTaskId);
       }
     }
+
     setInputCommand('');
     setShowSlashMenu(false);
   };
@@ -394,35 +575,6 @@ export default function TerminalView() {
           </div>
         </div>
 
-        {/* Multi-CLI Subtask Driver Tabs */}
-        {availableDrivers.length > 0 && (
-          <div className="flex items-center gap-1 bg-[#131318] p-1 rounded-lg border border-[#22222b]">
-            <button
-              onClick={() => setSelectedAgentFilter('all')}
-              className={`px-2.5 py-0.5 rounded text-[11px] font-semibold transition-colors ${
-                selectedAgentFilter === 'all'
-                  ? 'bg-sky-500 text-sky-950 font-bold'
-                  : 'text-zinc-400 hover:text-zinc-200'
-              }`}
-            >
-              All CLI Output
-            </button>
-            {availableDrivers.map((agentName) => (
-              <button
-                key={agentName}
-                onClick={() => setSelectedAgentFilter(agentName || 'all')}
-                className={`px-2.5 py-0.5 rounded text-[11px] font-semibold transition-colors ${
-                  selectedAgentFilter === agentName
-                    ? 'bg-purple-600 text-white font-bold'
-                    : 'text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                {agentName}
-              </button>
-            ))}
-          </div>
-        )}
-
         {/* Right header actions */}
         <div className="flex items-center gap-2 shrink-0">
           {(task?.status === 'planned' || task?.status === 'assigned') && (
@@ -451,6 +603,122 @@ export default function TerminalView() {
             title="Close workspace"
           >
             <X className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Multi-CLI Independent Selector Tab Bar */}
+      <div className="bg-[#0e0e12] border-b border-[#1b1b24] px-3 py-1.5 flex items-center gap-1.5 overflow-x-auto shrink-0 scrollbar-none">
+        {ALL_CLI_TABS.map((cli) => {
+          const isWorking = isCliRunning(cli.id);
+          const hasOutput = (outputCounts[cli.id] || 0) > 0;
+          const unread = unreadMap[cli.id] || 0;
+          const isSelected = selectedAgentFilter === cli.id;
+
+          return (
+            <button
+              key={cli.id}
+              onClick={() => setSelectedAgentFilter(cli.id)}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all shrink-0 relative ${
+                isSelected
+                  ? 'bg-[#1e1e28] text-white border border-[#38384e] shadow-md ring-1 ring-white/10'
+                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-[#15151c] border border-transparent'
+              }`}
+            >
+              <span className="text-sm">{cli.icon}</span>
+              <span className={isSelected ? 'font-bold text-white' : 'font-medium'}>{cli.name}</span>
+
+              {/* Real-time status badge */}
+              {isWorking ? (
+                <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-emerald-950/90 text-emerald-400 border border-emerald-700/80 text-[10px] font-mono animate-pulse">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                  Working
+                </span>
+              ) : hasOutput ? (
+                <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-sky-950/40 text-sky-400 border border-sky-800/30">
+                  Ready
+                </span>
+              ) : (
+                <span className="text-[10px] text-zinc-600 font-mono">Idle</span>
+              )}
+
+              {/* Unread indicator */}
+              {unread > 0 && !isSelected && (
+                <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping absolute -top-0.5 -right-0.5"></span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Dedicated CLI Status & Action Ribbon */}
+      <div className="h-9 bg-[#111116] border-b border-[#1a1a24] px-4 flex items-center justify-between text-xs shrink-0">
+        <div className="flex items-center gap-2 min-w-0">
+          {selectedAgentFilter === 'all' ? (
+            <div className="flex items-center gap-2 text-zinc-400 truncate">
+              <Globe className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+              <span className="font-semibold text-zinc-200">Unified Multi-CLI Stream</span>
+              <span className="text-zinc-600">·</span>
+              <span className="text-[11px] text-zinc-400 truncate">Combined console streaming all agent outputs for this task</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 text-zinc-300 truncate">
+              <span className="font-bold text-zinc-100 flex items-center gap-1.5">
+                <span>{currentTabDef?.icon}</span>
+                <span>{currentTabDef?.name} CLI</span>
+              </span>
+              <span className="text-zinc-600">·</span>
+              {isCliRunning(selectedAgentFilter) ? (
+                <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-950/80 text-emerald-400 border border-emerald-800 text-[11px] font-mono animate-pulse">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+                  Executing with {activeModel}
+                </span>
+              ) : (outputCounts[selectedAgentFilter] || 0) > 0 ? (
+                <span className="px-2 py-0.5 rounded-full bg-sky-950/60 text-sky-400 border border-sky-800 text-[11px] font-mono">
+                  ✓ Output ready ({outputCounts[selectedAgentFilter]} events recorded)
+                </span>
+              ) : (
+                <span className="px-2 py-0.5 rounded-full bg-zinc-800/80 text-zinc-400 border border-zinc-700 text-[11px] font-mono">
+                  Standby · Ready to run
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          {selectedAgentFilter !== 'all' && (
+            <>
+              {isCliRunning(selectedAgentFilter) ? (
+                <button
+                  onClick={handleStopCli}
+                  className="px-2.5 py-1 bg-red-950/70 hover:bg-red-900 border border-red-800 text-red-300 font-bold text-[11px] rounded-lg flex items-center gap-1 transition-colors"
+                >
+                  <Square className="w-3 h-3" />
+                  <span>Stop {selectedAgentFilter}</span>
+                </button>
+              ) : (
+                <button
+                  onClick={() => handleLaunchCli(selectedAgentFilter)}
+                  disabled={task?.status === 'working'}
+                  className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-zinc-950 font-bold text-[11px] rounded-lg flex items-center gap-1 transition-colors shadow-sm"
+                  title={task?.status === 'working' ? 'Another agent is currently running' : `Run task with ${selectedAgentFilter}`}
+                >
+                  <Play className="w-3 h-3 fill-current" />
+                  <span>Run with {selectedAgentFilter}</span>
+                </button>
+              )}
+            </>
+          )}
+
+          <button
+            onClick={() => {
+              xtermRef.current?.reset();
+            }}
+            className="px-2 py-1 bg-[#181820] hover:bg-[#22222e] border border-[#272734] text-zinc-400 hover:text-zinc-200 text-[11px] rounded-lg font-mono transition-colors"
+            title="Clear this terminal view"
+          >
+            Clear
           </button>
         </div>
       </div>
@@ -583,7 +851,15 @@ export default function TerminalView() {
                     setShowSlashMenu(false);
                   }
                 }}
-                placeholder={task?.status === 'working' ? 'Type input or / for commands (/model, /preview, /diff)...' : 'Type / for commands (/model, /restart, /help)...'}
+                placeholder={
+                  selectedAgentFilter !== 'all'
+                    ? (isCliRunning(selectedAgentFilter)
+                        ? `Send input to ${selectedAgentFilter} CLI (or type /)...`
+                        : `Type prompt to run ${selectedAgentFilter} CLI, or / for commands...`)
+                    : (task?.status === 'working'
+                        ? 'Type input to active agent, or / for commands (/model, /preview, /diff)...'
+                        : 'Type / for commands (/model, /restart, /help)...')
+                }
                 className="flex-1 bg-transparent text-xs text-zinc-100 outline-none placeholder:text-zinc-500 font-mono"
               />
               <button
@@ -609,7 +885,7 @@ export default function TerminalView() {
               <div className="flex items-center gap-2 truncate">
                 <span className="flex items-center gap-1 text-purple-400 font-semibold">
                   <Flame className="w-3 h-3 text-purple-400" />
-                  <span>{task?.agent || 'CLI Agent'}</span>
+                  <span>{selectedAgentFilter !== 'all' ? `${selectedAgentFilter} CLI` : (task?.agent || 'CLI Agent')}</span>
                 </span>
                 <span className="text-zinc-600">·</span>
                 {/* Clickable Model Switcher Badge */}

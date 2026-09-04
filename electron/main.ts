@@ -489,11 +489,11 @@ async function startAgentRun(
     actualWorkdir,
     (chunk) => {
       try {
-        event.sender.send('task-output', taskId, chunk)
+        event.sender.send('task-output', taskId, chunk, agent)
       } catch {
         /* sender may have been closed/navigated */
       }
-      emit('task-output', taskId, chunk)
+      emit('task-output', taskId, chunk, agent)
       addTerminalLine({ id: genId(), jobId: taskId, type: 'output', content: chunk, agent })
 
       // Per-command approval pattern detection

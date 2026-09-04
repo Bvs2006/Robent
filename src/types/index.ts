@@ -284,7 +284,7 @@ declare global {
       updateSubtaskAgent: (taskId: string, subtaskId: string, agent: AgentName) => Promise<any>
       respondCommandApproval: (taskId: string, promptId: string, approve: boolean) => Promise<boolean>
       onCommandApprovalRequested: (cb: (payload: { taskId: string; promptId: string; command: string }) => void) => () => void
-      onTaskOutput: (cb: (taskId: string, chunk: string) => void) => () => void
+      onTaskOutput: (cb: (taskId: string, chunk: string, agent?: string) => void) => () => void
       onTaskDone: (cb: (taskId: string, result: any) => void) => () => void
       onStateChanged: (cb: () => void) => () => void
       onRuntimeTick: (cb: (runtimes: Record<string, number>) => void) => () => void
