@@ -1,7 +1,11 @@
 {
   "name": "robent",
+  "productName": "Robent",
+  "description": "Agent IDE to supervise fleets of autonomous coding agents",
+  "version": "1.0.0",
+  "author": "Bvs2006",
+  "license": "Apache-2.0",
   "private": true,
-  "version": "0.0.0",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -53,6 +57,20 @@
       "target": [
         "nsis",
         "portable"
+      ]
+    },
+    "mac": {
+      "icon": "build/icon.png",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "target": [
+        "AppImage",
+        "deb"
       ]
     },
     "nsis": {

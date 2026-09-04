@@ -27,3 +27,14 @@ my-project/
 *.njsproj
 *.sln
 *.sw?
+
+# Agent & Runtime Generated
+agent-profiles.json
+.aider-mcp.json
+.aider*
+agent.yaml
+image.png
+*.db
+*.db-journal
+opencode.json
+.mcp.json

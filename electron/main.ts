@@ -114,27 +114,39 @@ function createWindow() {
   }
 }
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') { app.quit(); win = null }
-})
-app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    if (win) {
+      if (win.isMinimized()) win.restore()
+      win.focus()
+    }
+  })
 
-app.whenReady().then(() => {
-  // Initialize DB and seed
-  try {
-    const db = getDb()
-    purgeDemoData()
-    seedDefaultData()
-    // Reset any orphaned working tasks, workers, and stuck blocked states from previous app sessions
-    db.prepare(`DELETE FROM workers`).run()
-    db.prepare(`UPDATE jobs SET status = 'planned' WHERE status = 'working'`).run()
-    db.prepare(`UPDATE jobs SET is_blocked = 0, blocked_reason = NULL, sub_status = NULL WHERE is_blocked = 1`).run()
-    refreshToolStatuses().catch((error) => console.error('Tool status refresh failed:', error))
-  } catch (e) {
-    console.error('DB init error:', e)
-  }
-  createWindow()
-})
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') { app.quit(); win = null }
+  })
+  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
+
+  app.whenReady().then(() => {
+    // Initialize DB and seed
+    try {
+      const db = getDb()
+      purgeDemoData()
+      seedDefaultData()
+      // Reset any orphaned working tasks, workers, and stuck blocked states from previous app sessions
+      db.prepare(`DELETE FROM workers`).run()
+      db.prepare(`UPDATE jobs SET status = 'planned' WHERE status = 'working'`).run()
+      db.prepare(`UPDATE jobs SET is_blocked = 0, blocked_reason = NULL, sub_status = NULL WHERE is_blocked = 1`).run()
+      refreshToolStatuses().catch((error) => console.error('Tool status refresh failed:', error))
+    } catch (e) {
+      console.error('DB init error:', e)
+    }
+    createWindow()
+  })
+}
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
 function emit(channel: string, ...args: any[]) {

@@ -83,9 +83,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Hooks
   getHooks: () => ipcRenderer.invoke('get-hooks'),
   addHook: (hook) => ipcRenderer.invoke('add-hook', hook),
-  updateHook: (id, fields) => ipcRenderer.invoke('update-hook', { id, fields }),
+  updateHook: (id, fields) => ipcRenderer.invoke('update-hook', id, fields),
   deleteHook: (id) => ipcRenderer.invoke('delete-hook', id),
-  toggleHook: (id, enabled) => ipcRenderer.invoke('toggle-hook', { id, enabled }),
+  toggleHook: (id, enabled) => ipcRenderer.invoke('toggle-hook', id, enabled),
   testHookCommand: (command) => ipcRenderer.invoke('test-hook-command', command),
 
   // Plan Approval & Command Approval

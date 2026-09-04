@@ -7,6 +7,7 @@
 import { spawn } from 'node-pty'
 import type { IPty } from 'node-pty'
 import * as os from 'os'
+import { execSync } from 'child_process'
 import { toolEnv } from './tool-setup.js'
 
 export interface TaskResult {
@@ -130,6 +131,13 @@ export abstract class BaseDriver {
       this.timeoutHandle = null
     }
     if (this.ptyProcess) {
+      try {
+        if (os.platform() === 'win32' && this.ptyProcess.pid) {
+          execSync(`taskkill /PID ${this.ptyProcess.pid} /T /F`, { stdio: 'ignore' })
+        }
+      } catch {
+        /* ignore if process already terminated */
+      }
       try {
         this.ptyProcess.kill()
       } catch {
