@@ -529,11 +529,36 @@ export function runToolAction(
   const def = TOOL_DEFINITIONS[toolId]
   const sessionId = `${toolId}-${Math.random().toString(36).slice(2, 9)}`
 
+  if (kind === 'terminal') {
+    const binary = resolveToolBinary(def.binary)
+    const ptyProcess = spawnPty(binary, [], {
+      name: 'xterm-256color',
+      cols: 120,
+      rows: 40,
+      cwd: cwd || process.cwd(),
+      env: toolEnv(),
+    })
+
+    let rawOutput = ''
+    const promise = new Promise<{ exitCode: number; rawOutput: string }>((resolve) => {
+      ptyProcess.onData((data) => {
+        rawOutput += data
+        onOutput(data)
+      })
+      ptyProcess.onExit(({ exitCode }) => resolve({ exitCode: exitCode ?? 0, rawOutput }))
+    })
+
+    activeToolPtySessions.set(sessionId, ptyProcess)
+    const tracked = promise.finally(() => {
+      activeToolPtySessions.delete(sessionId)
+    })
+
+    return { sessionId, promise: tracked }
+  }
+
   let commandLine = ''
   if (kind === 'install') {
     commandLine = normalizeWindowsCommandLine(def.installCommand)
-  } else if (kind === 'terminal') {
-    commandLine = resolveToolBinary(def.binary)
   } else if (toolId === 'aider') {
     if (secret) saveToolSecret(toolId, 'Aider API key', secret)
     commandLine = 'echo Aider API key saved.'

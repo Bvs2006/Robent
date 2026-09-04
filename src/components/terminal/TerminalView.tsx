@@ -157,22 +157,13 @@ export default function TerminalView() {
       }
     } else {
       if (filter === 'all') {
-        // The ONE custom CLI: Robent Agent for input prompt & orchestration
-        xtermRef.current.writeln(`\x1b[1;36m=== Robent Agent Orchestrator (Custom Prompt CLI) ===\x1b[0m`);
+        // The ONE custom CLI: Robent Agent for recording CLI work & prompting changes
+        xtermRef.current.writeln(`\x1b[1;36m=== 🤖 Robent Custom Agent (CLI Work Recorder & Change Prompter) ===\x1b[0m\r\n`);
         xtermRef.current.writeln(`Task:     \x1b[33m${currentTask?.title || terminalTaskId || 'Untitled'}\x1b[0m`);
         xtermRef.current.writeln(`Status:   \x1b[32m${currentTask?.status || 'idle'}\x1b[0m`);
         xtermRef.current.writeln(`Worktree: \x1b[38;5;244m${currentTask?.worktree || 'Current Workspace'}\x1b[0m\r\n`);
-        xtermRef.current.writeln(`\x1b[38;5;244mEnter prompt below to agent the task across native CLIs (OpenCode, Codex, Claude Code, Antigravity).\x1b[0m\r\n`);
-      } else {
-        // Native CLI tabs: clean direct prompt without fake ASCII boxes
-        const isRunning = isCliRunning(filter);
-        const hasActiveShell = Boolean(activeToolSessionsRef.current[filter]);
-        if (isRunning || hasActiveShell) {
-          xtermRef.current.writeln(`\x1b[32m[${filter} native CLI process running]\x1b[0m\r\n`);
-        } else {
-          xtermRef.current.writeln(`\x1b[38;5;244m${filter} (native CLI) ready in ${currentTask?.worktree || 'workspace'}\x1b[0m`);
-          xtermRef.current.writeln(`\x1b[38;5;244mClick "Launch Native ${filter} Shell" above or type a command to start.\x1b[0m\r\n`);
-        }
+        xtermRef.current.writeln(`\x1b[38;5;250m⏺ Recording what each real CLI (OpenCode, Claude Code, Codex, Antigravity, Aider) is working on.\x1b[0m`);
+        xtermRef.current.writeln(`\x1b[38;5;244mUse the bottom prompt bar to request changes and forward context to any native CLI.\x1b[0m\r\n`);
       }
     }
   };
@@ -297,11 +288,19 @@ export default function TerminalView() {
     });
   }, [terminalTaskId]);
 
-  // When tab switches, clear unread and re-render that CLI's buffer
+  // When tab switches, clear unread, re-render buffer, and auto-connect real native CLI
   useEffect(() => {
     const currentTask = useFleetStore.getState().tasks.find((t) => t.id === terminalTaskId);
     setUnreadMap((prev) => ({ ...prev, [selectedAgentFilter]: 0 }));
     renderAgentBuffer(selectedAgentFilter, currentTask);
+
+    if (selectedAgentFilter !== 'all' && AGENT_TO_TOOL_ID[selectedAgentFilter]) {
+      const isRunning = isCliRunning(selectedAgentFilter);
+      const hasActiveSession = Boolean(activeToolSessionsRef.current[selectedAgentFilter]);
+      if (!isRunning && !hasActiveSession && window.electronAPI?.runToolAction) {
+        handleLaunchNativeShell(selectedAgentFilter);
+      }
+    }
   }, [selectedAgentFilter]);
 
   // Live streaming output effect
@@ -429,21 +428,13 @@ export default function TerminalView() {
     const toolId = AGENT_TO_TOOL_ID[agentName];
     if (!toolId || !window.electronAPI?.runToolAction) return;
     const workdir = task?.worktree || undefined;
-    if (xtermRef.current) {
-      xtermRef.current.writeln(`\r\n\x1b[36m[Robent] Spawning real native ${agentName} process in ${workdir || 'workspace'}...\x1b[0m\r\n`);
-    }
     try {
       const res = await window.electronAPI.runToolAction({ toolId, kind: 'terminal', cwd: workdir });
       if (res?.sessionId) {
         setActiveToolSessions((prev) => ({ ...prev, [agentName]: res.sessionId }));
-        if (xtermRef.current) {
-          xtermRef.current.writeln(`\x1b[32m[Robent] Native ${agentName} shell session connected.\x1b[0m\r\n`);
-        }
       }
     } catch (err: any) {
-      if (xtermRef.current) {
-        xtermRef.current.writeln(`\x1b[31m[Robent] Failed to launch native ${agentName}: ${err?.message || err}\x1b[0m\r\n`);
-      }
+      console.error(`Failed to launch native ${agentName}:`, err);
     }
   };
 
@@ -639,17 +630,26 @@ export default function TerminalView() {
         }
       }
 
-      if (window.electronAPI?.updateJob) {
-        await window.electronAPI.updateJob(terminalTaskId, { agent: targetAgent, model: activeModel, prompt: finalPrompt });
-      }
-
-      if (task?.status === 'working' && window.electronAPI?.sendTaskInput) {
-        window.electronAPI.sendTaskInput(terminalTaskId, finalPrompt + '\r\n');
+      // If target CLI has an active native interactive shell, pipe change prompt directly into it
+      const targetSessionId = activeToolSessions[targetAgent];
+      if (targetSessionId && window.electronAPI?.writeToolInput) {
+        window.electronAPI.writeToolInput({ sessionId: targetSessionId, data: finalPrompt + '\r\n' });
         if (xtermRef.current) {
-          xtermRef.current.write(`\r\n\x1b[36m❯ ${raw}\x1b[0m\r\n`);
+          xtermRef.current.writeln(`\x1b[32m[Robent Custom Agent] ✓ Piped change prompt directly into active ${targetAgent} session.\x1b[0m\r\n`);
         }
       } else {
-        await startTask(terminalTaskId);
+        if (window.electronAPI?.updateJob) {
+          await window.electronAPI.updateJob(terminalTaskId, { agent: targetAgent, model: activeModel, prompt: finalPrompt });
+        }
+
+        if (task?.status === 'working' && window.electronAPI?.sendTaskInput) {
+          window.electronAPI.sendTaskInput(terminalTaskId, finalPrompt + '\r\n');
+          if (xtermRef.current) {
+            xtermRef.current.write(`\r\n\x1b[36m❯ ${raw}\x1b[0m\r\n`);
+          }
+        } else {
+          await startTask(terminalTaskId);
+        }
       }
     }
 
@@ -960,6 +960,47 @@ export default function TerminalView() {
             </div>
           )}
 
+          {/* Robent Custom Agent: Live Real CLI Work Recorder Strip */}
+          {selectedAgentFilter === 'all' && (
+            <div className="bg-[#0e0e14] border-b border-[#1c1c26] px-3 py-1.5 flex items-center gap-2 overflow-x-auto shrink-0 scrollbar-none">
+              <div className="text-[10px] uppercase font-bold text-zinc-400 font-mono flex items-center gap-1.5 shrink-0 pr-2 border-r border-zinc-800">
+                <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse"></span>
+                <span>Live CLI Recorder</span>
+              </div>
+              {PRIMARY_CLIS.filter((c) => !c.isCustomAgent).map((cli) => {
+                const hasSession = Boolean(activeToolSessions[cli.name]);
+                const isWorking = isCliRunning(cli.name);
+                const count = outputCounts[cli.name] || 0;
+                return (
+                  <button
+                    key={cli.id}
+                    onClick={() => setSelectedAgentFilter(cli.id)}
+                    className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-[#14141c] hover:bg-[#1c1c28] border border-zinc-800/80 text-xs transition-colors shrink-0 group"
+                    title={`Click to open and work directly in real native ${cli.name} CLI`}
+                  >
+                    <span>{cli.icon}</span>
+                    <span className="font-semibold text-zinc-300 group-hover:text-white text-[11px]">{cli.name}</span>
+                    {hasSession ? (
+                      <span className="px-1.5 py-0.2 rounded text-[10px] font-mono bg-sky-950 text-sky-400 border border-sky-800 flex items-center gap-1">
+                        <span className="w-1 h-1 rounded-full bg-sky-400"></span>
+                        Real CLI Active
+                      </span>
+                    ) : isWorking ? (
+                      <span className="px-1.5 py-0.2 rounded text-[10px] font-mono bg-emerald-950 text-emerald-400 border border-emerald-800 flex items-center gap-1 animate-pulse">
+                        <span className="w-1 h-1 rounded-full bg-emerald-400"></span>
+                        Running
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-zinc-500 font-mono">
+                        {count > 0 ? `${count} events` : 'Standby'}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
           {/* xterm.js Terminal Container */}
           <div className="flex-1 relative p-2 overflow-hidden">
             <div ref={terminalRef} className="absolute inset-0 p-3" />
@@ -1069,12 +1110,10 @@ export default function TerminalView() {
                 }}
                 placeholder={
                   selectedAgentFilter !== 'all'
-                    ? (isCliRunning(selectedAgentFilter)
-                        ? `Send input to ${selectedAgentFilter} CLI (or type /)...`
-                        : `Type prompt to run ${selectedAgentFilter} CLI, or / for commands...`)
-                    : (task?.status === 'working'
-                        ? 'Type input to active agent, or / for commands (/model, /preview, /diff)...'
-                        : 'Type / for commands (/model, /restart, /help)...')
+                    ? (isCliRunning(selectedAgentFilter) || activeToolSessions[selectedAgentFilter]
+                        ? `Send input directly to real native ${selectedAgentFilter} CLI...`
+                        : `Type input for real native ${selectedAgentFilter} CLI...`)
+                    : `Prompt changes for native ${targetNativeCli} CLI (feeds recorded changes)...`
                 }
                 className="flex-1 bg-transparent text-xs text-zinc-100 outline-none placeholder:text-zinc-500 font-mono"
               />
