@@ -26,18 +26,28 @@ import 'xterm/css/xterm.css';
 interface CliTabDef {
   id: string;
   name: string;
+  badge: string;
   icon: string;
   desc: string;
+  isCustomAgent?: boolean;
 }
 
 const PRIMARY_CLIS: CliTabDef[] = [
-  { id: 'all', name: 'All CLIs', icon: '🌐', desc: 'Unified multi-CLI combined stream' },
-  { id: 'OpenCode', name: 'OpenCode', icon: '⚡', desc: 'Planning & full-stack reasoning' },
-  { id: 'Codex', name: 'Codex', icon: '🧠', desc: 'Fast code generation & fixes' },
-  { id: 'Antigravity', name: 'Antigravity', icon: '🚀', desc: 'Deep autonomous agentic workflows' },
-  { id: 'Claude Code', name: 'Claude Code', icon: '🟣', desc: 'Complex refactors & architecture' },
-  { id: 'Aider', name: 'Aider', icon: '🔨', desc: 'Git-integrated precise edits' },
+  { id: 'all', name: 'Robent Agent', badge: 'Custom Agent CLI', icon: '🤖', desc: 'Input prompt & agent orchestration', isCustomAgent: true },
+  { id: 'OpenCode', name: 'OpenCode', badge: 'Native CLI', icon: '⚡', desc: 'Real native OpenCode CLI' },
+  { id: 'Codex', name: 'Codex', badge: 'Native CLI', icon: '🧠', desc: 'Real native Codex CLI' },
+  { id: 'Antigravity', name: 'Antigravity', badge: 'Native CLI', icon: '🚀', desc: 'Real native Antigravity CLI' },
+  { id: 'Claude Code', name: 'Claude Code', badge: 'Native CLI', icon: '🟣', desc: 'Real native Claude Code CLI' },
+  { id: 'Aider', name: 'Aider', badge: 'Native CLI', icon: '🔨', desc: 'Real native Aider CLI' },
 ];
+
+const AGENT_TO_TOOL_ID: Record<string, 'opencode' | 'codex' | 'antigravity' | 'claude-code' | 'aider'> = {
+  'OpenCode': 'opencode',
+  'Codex': 'codex',
+  'Antigravity': 'antigravity',
+  'Claude Code': 'claude-code',
+  'Aider': 'aider',
+};
 
 function normalizeAgent(name?: string): string {
   if (!name) return '';
@@ -88,6 +98,17 @@ export default function TerminalView() {
   const [unreadMap, setUnreadMap] = useState<Record<string, number>>({});
   const [outputCounts, setOutputCounts] = useState<Record<string, number>>({});
 
+  // Active interactive native tool shell session IDs
+  const [activeToolSessions, setActiveToolSessions] = useState<Record<string, string>>({});
+  const activeToolSessionsRef = useRef<Record<string, string>>({});
+  activeToolSessionsRef.current = activeToolSessions;
+
+  // Custom Agent Orchestrator & CLI Change Recorder state
+  const [targetNativeCli, setTargetNativeCli] = useState<string>('OpenCode');
+  const [autoFeedRecordedChanges, setAutoFeedRecordedChanges] = useState<boolean>(true);
+  const [worktreeDiff, setWorktreeDiff] = useState<string>('');
+  const [showRecordedDiff, setShowRecordedDiff] = useState<boolean>(false);
+
   // Supported model choices
   const AVAILABLE_MODELS = [
     { id: 'claude-3-7-sonnet', name: 'Claude 3.7 Sonnet', desc: 'Hybrid reasoning, deep coding' },
@@ -130,29 +151,27 @@ export default function TerminalView() {
 
     const lines = agentOutputsRef.current[filter] || [];
     if (lines.length > 0) {
+      // Pure raw native output directly from CLI process - no synthetic banners
       for (const line of lines) {
         xtermRef.current.write(line);
       }
     } else {
       if (filter === 'all') {
-        xtermRef.current.writeln(`\x1b[1;36m┌─────────────────────────────────────────────────────────────┐\x1b[0m`);
-        xtermRef.current.writeln(`\x1b[1;36m│\x1b[0m  \x1b[1;37mRobent Unified Multi-CLI Console\x1b[0m                           \x1b[1;36m│\x1b[0m`);
-        xtermRef.current.writeln(`\x1b[1;36m│\x1b[0m  Task:   \x1b[33m${(currentTask?.title || terminalTaskId || '').slice(0, 48)}\x1b[0m`);
-        xtermRef.current.writeln(`\x1b[1;36m│\x1b[0m  Status: \x1b[32m${currentTask?.status || 'idle'}\x1b[0m`);
-        xtermRef.current.writeln(`\x1b[1;36m└─────────────────────────────────────────────────────────────┘\x1b[0m\r\n`);
-        xtermRef.current.writeln(`\x1b[38;5;244m[Unified stream · Logs from all active and subtask agents stream here]\x1b[0m\r\n`);
+        // The ONE custom CLI: Robent Agent for input prompt & orchestration
+        xtermRef.current.writeln(`\x1b[1;36m=== Robent Agent Orchestrator (Custom Prompt CLI) ===\x1b[0m`);
+        xtermRef.current.writeln(`Task:     \x1b[33m${currentTask?.title || terminalTaskId || 'Untitled'}\x1b[0m`);
+        xtermRef.current.writeln(`Status:   \x1b[32m${currentTask?.status || 'idle'}\x1b[0m`);
+        xtermRef.current.writeln(`Worktree: \x1b[38;5;244m${currentTask?.worktree || 'Current Workspace'}\x1b[0m\r\n`);
+        xtermRef.current.writeln(`\x1b[38;5;244mEnter prompt below to agent the task across native CLIs (OpenCode, Codex, Claude Code, Antigravity).\x1b[0m\r\n`);
       } else {
+        // Native CLI tabs: clean direct prompt without fake ASCII boxes
         const isRunning = isCliRunning(filter);
-        xtermRef.current.writeln(`\x1b[1;35m┌─────────────────────────────────────────────────────────────┐\x1b[0m`);
-        xtermRef.current.writeln(`\x1b[1;35m│\x1b[0m  \x1b[1;37m${filter} CLI Dedicated Workspace\x1b[0m                       \x1b[1;35m│\x1b[0m`);
-        xtermRef.current.writeln(`\x1b[1;35m│\x1b[0m  Status: ${isRunning ? '\x1b[1;32m● Running (Executing task...)\x1b[0m' : '\x1b[38;5;244mStandby · Idle\x1b[0m'}`);
-        xtermRef.current.writeln(`\x1b[1;35m│\x1b[0m  Model:  \x1b[36m${activeModel}\x1b[0m`);
-        xtermRef.current.writeln(`\x1b[1;35m└─────────────────────────────────────────────────────────────┘\x1b[0m\r\n`);
-        if (isRunning) {
-          xtermRef.current.writeln(`\x1b[32m[${filter} is currently running on this task. Streaming output live...]\x1b[0m\r\n`);
+        const hasActiveShell = Boolean(activeToolSessionsRef.current[filter]);
+        if (isRunning || hasActiveShell) {
+          xtermRef.current.writeln(`\x1b[32m[${filter} native CLI process running]\x1b[0m\r\n`);
         } else {
-          xtermRef.current.writeln(`\x1b[38;5;244mNo terminal output recorded for ${filter} on this task yet.\x1b[0m`);
-          xtermRef.current.writeln(`\x1b[38;5;244mType a prompt below and press Enter, or click "Run with ${filter}" above to start.\x1b[0m\r\n`);
+          xtermRef.current.writeln(`\x1b[38;5;244m${filter} (native CLI) ready in ${currentTask?.worktree || 'workspace'}\x1b[0m`);
+          xtermRef.current.writeln(`\x1b[38;5;244mClick "Launch Native ${filter} Shell" above or type a command to start.\x1b[0m\r\n`);
         }
       }
     }
@@ -184,8 +203,13 @@ export default function TerminalView() {
     xtermRef.current = term;
     fitAddonRef.current = fitAddon;
 
-    // Interactive input directly to PTY on key press
+    // Interactive input directly to native PTY or task PTY on key press
     const dataDisposable = term.onData((data) => {
+      const toolSessionId = activeToolSessionsRef.current[selectedAgentFilter];
+      if (toolSessionId && window.electronAPI?.writeToolInput) {
+        window.electronAPI.writeToolInput({ sessionId: toolSessionId, data });
+        return;
+      }
       if (terminalTaskId && window.electronAPI?.sendTaskInput) {
         window.electronAPI.sendTaskInput(terminalTaskId, data);
       }
@@ -202,7 +226,47 @@ export default function TerminalView() {
       term.dispose();
       xtermRef.current = null;
     };
-  }, [terminalTaskId]);
+  }, [terminalTaskId, selectedAgentFilter]);
+
+  // Listen for native tool interactive session output
+  useEffect(() => {
+    if (!window.electronAPI?.onToolOutput) return;
+
+    const unsubOutput = window.electronAPI.onToolOutput((toolId, _sessionId, chunk) => {
+      const entry = Object.entries(AGENT_TO_TOOL_ID).find(([, id]) => id === toolId);
+      if (!entry) return;
+      const agentName = entry[0];
+
+      if (!agentOutputsRef.current[agentName]) agentOutputsRef.current[agentName] = [];
+      agentOutputsRef.current[agentName].push(chunk);
+
+      setOutputCounts((prev) => ({
+        ...prev,
+        [agentName]: (prev[agentName] || 0) + 1,
+      }));
+
+      if (selectedAgentFilter === agentName && xtermRef.current) {
+        xtermRef.current.write(chunk);
+      }
+    });
+
+    const unsubEnded = window.electronAPI.onToolActionEnded?.((toolId) => {
+      const entry = Object.entries(AGENT_TO_TOOL_ID).find(([, id]) => id === toolId);
+      if (entry) {
+        const agentName = entry[0];
+        setActiveToolSessions((prev) => {
+          const updated = { ...prev };
+          delete updated[agentName];
+          return updated;
+        });
+      }
+    });
+
+    return () => {
+      unsubOutput?.();
+      unsubEnded?.();
+    };
+  }, [selectedAgentFilter]);
 
   // Load existing output and history on task selection
   useEffect(() => {
@@ -296,6 +360,11 @@ export default function TerminalView() {
           setWorktreeFiles(files || []);
         }).catch(() => {});
       }
+      if (api?.getWorktreeDiff) {
+        api.getWorktreeDiff(terminalTaskId).then((diff) => {
+          setWorktreeDiff(diff || '');
+        }).catch(() => {});
+      }
       if (api?.getTaskPreview) {
         api.getTaskPreview(terminalTaskId).then((info) => {
           setPreviewInfo(info);
@@ -353,6 +422,44 @@ export default function TerminalView() {
       xtermRef.current.writeln(`\r\n\x1b[35m[Robent] Switched target agent to: ${agentName}\x1b[0m\r\n`);
     }
     useFleetStore.getState().loadTasks();
+  };
+
+  // Launch interactive real native CLI shell
+  const handleLaunchNativeShell = async (agentName: string) => {
+    const toolId = AGENT_TO_TOOL_ID[agentName];
+    if (!toolId || !window.electronAPI?.runToolAction) return;
+    const workdir = task?.worktree || undefined;
+    if (xtermRef.current) {
+      xtermRef.current.writeln(`\r\n\x1b[36m[Robent] Spawning real native ${agentName} process in ${workdir || 'workspace'}...\x1b[0m\r\n`);
+    }
+    try {
+      const res = await window.electronAPI.runToolAction({ toolId, kind: 'terminal', cwd: workdir });
+      if (res?.sessionId) {
+        setActiveToolSessions((prev) => ({ ...prev, [agentName]: res.sessionId }));
+        if (xtermRef.current) {
+          xtermRef.current.writeln(`\x1b[32m[Robent] Native ${agentName} shell session connected.\x1b[0m\r\n`);
+        }
+      }
+    } catch (err: any) {
+      if (xtermRef.current) {
+        xtermRef.current.writeln(`\x1b[31m[Robent] Failed to launch native ${agentName}: ${err?.message || err}\x1b[0m\r\n`);
+      }
+    }
+  };
+
+  // Terminate interactive native CLI shell
+  const handleKillNativeShell = async (agentName: string) => {
+    const sessionId = activeToolSessions[agentName];
+    if (!sessionId || !window.electronAPI?.killToolSession) return;
+    await window.electronAPI.killToolSession(sessionId);
+    setActiveToolSessions((prev) => {
+      const copy = { ...prev };
+      delete copy[agentName];
+      return copy;
+    });
+    if (xtermRef.current) {
+      xtermRef.current.writeln(`\r\n\x1b[33m[Robent] Native ${agentName} shell disconnected.\x1b[0m\r\n`);
+    }
   };
 
   // Launch a specific CLI on this task
@@ -478,9 +585,18 @@ export default function TerminalView() {
     // Normal interactive prompt / command dispatch
     if (selectedAgentFilter !== 'all') {
       const targetAgent = selectedAgentFilter;
-      const isRunning = isCliRunning(targetAgent);
+      const activeShellId = activeToolSessions[targetAgent];
 
-      if (isRunning) {
+      if (activeShellId) {
+        // Native interactive shell is active: route raw stdin directly to the native PTY process
+        if (window.electronAPI?.writeToolInput) {
+          window.electronAPI.writeToolInput({ sessionId: activeShellId, data: raw + '\r\n' });
+        }
+        if (xtermRef.current) {
+          xtermRef.current.write(`\r\n\x1b[32m❯ ${raw}\x1b[0m\r\n`);
+        }
+      } else if (isCliRunning(targetAgent)) {
+        // Task driver is active with this CLI: route input to task PTY
         if (window.electronAPI?.sendTaskInput) {
           window.electronAPI.sendTaskInput(terminalTaskId, raw + '\r\n');
           if (xtermRef.current) {
@@ -488,22 +604,47 @@ export default function TerminalView() {
           }
         }
       } else {
+        // Idle: launch task execution using this native CLI
         const otherRunningWorker = (workers || []).find((w) => w.taskId === terminalTaskId && w.status === 'running' && normalizeAgent(w.agent) !== targetAgent);
         const isOtherAgentRunning = task?.status === 'working' && normalizeAgent(task?.agent) !== targetAgent;
         if (isOtherAgentRunning || otherRunningWorker) {
           const busyAgent = task?.agent || otherRunningWorker?.agent || 'Another CLI';
           xtermRef.current?.writeln(`\r\n\x1b[33m[Robent] ${busyAgent} is currently running on this task. Stop it first before launching ${targetAgent}.\x1b[0m\r\n`);
         } else {
-          xtermRef.current?.writeln(`\r\n\x1b[32m[Robent] Launching ${targetAgent} on task "${task?.title || terminalTaskId}"...\x1b[0m\r\n`);
+          xtermRef.current?.writeln(`\r\n\x1b[32m[Robent] Launching native ${targetAgent} on task "${task?.title || terminalTaskId}"...\x1b[0m\r\n`);
           if (window.electronAPI?.updateJob) {
-            await window.electronAPI.updateJob(terminalTaskId, { agent: targetAgent, model: activeModel });
+            await window.electronAPI.updateJob(terminalTaskId, { agent: targetAgent, model: activeModel, prompt: raw });
           }
           await startTask(terminalTaskId);
         }
       }
     } else {
+      // The ONE Custom Agent CLI: input prompt orchestration & change recording context bridge
+      const targetAgent = targetNativeCli;
+      let finalPrompt = raw;
+
+      if (autoFeedRecordedChanges && worktreeFiles.length > 0) {
+        const changesSummary = worktreeFiles.map((f) => `- ${f.path} [${f.index || f.working_dir || 'modified'}]`).join('\n');
+        const diffSnippet = worktreeDiff ? `\nRecent diff snippet:\n${worktreeDiff.slice(0, 1500)}\n` : '';
+        const recordedContext = `[Context: Recorded changes from previous CLI executions]\nModified/created files in worktree:\n${changesSummary}\n${diffSnippet}\n[Instruction]\n`;
+        finalPrompt = `${recordedContext}${raw}`;
+
+        if (xtermRef.current) {
+          xtermRef.current.writeln(`\r\n\x1b[1;36m[Robent Agent]\x1b[0m ⏺ Recorded ${worktreeFiles.length} file changes from previous CLI runs.`);
+          xtermRef.current.writeln(`\x1b[1;36m[Robent Agent]\x1b[0m ❯ Forwarding prompt with recorded context to native \x1b[33m${targetAgent}\x1b[0m CLI...\r\n`);
+        }
+      } else {
+        if (xtermRef.current) {
+          xtermRef.current.writeln(`\r\n\x1b[1;36m[Robent Agent]\x1b[0m ❯ Prompting native \x1b[33m${targetAgent}\x1b[0m CLI: "${raw}"...\r\n`);
+        }
+      }
+
+      if (window.electronAPI?.updateJob) {
+        await window.electronAPI.updateJob(terminalTaskId, { agent: targetAgent, model: activeModel, prompt: finalPrompt });
+      }
+
       if (task?.status === 'working' && window.electronAPI?.sendTaskInput) {
-        window.electronAPI.sendTaskInput(terminalTaskId, raw + '\r\n');
+        window.electronAPI.sendTaskInput(terminalTaskId, finalPrompt + '\r\n');
         if (xtermRef.current) {
           xtermRef.current.write(`\r\n\x1b[36m❯ ${raw}\x1b[0m\r\n`);
         }
@@ -652,26 +793,44 @@ export default function TerminalView() {
       </div>
 
       {/* Dedicated CLI Status & Action Ribbon */}
-      <div className="h-9 bg-[#111116] border-b border-[#1a1a24] px-4 flex items-center justify-between text-xs shrink-0">
+      <div className="h-10 bg-[#111116] border-b border-[#1a1a24] px-4 flex items-center justify-between text-xs shrink-0">
         <div className="flex items-center gap-2 min-w-0">
           {selectedAgentFilter === 'all' ? (
             <div className="flex items-center gap-2 text-zinc-400 truncate">
-              <Globe className="w-3.5 h-3.5 text-sky-400 shrink-0" />
-              <span className="font-semibold text-zinc-200">Unified Multi-CLI Stream</span>
+              <span className="text-base">🤖</span>
+              <span className="font-bold text-zinc-100">Robent Agent</span>
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-sky-950/80 text-sky-400 border border-sky-800/60">
+                Custom Orchestrator CLI
+              </span>
               <span className="text-zinc-600">·</span>
-              <span className="text-[11px] text-zinc-400 truncate">Combined console streaming all agent outputs for this task</span>
+              <span className={`px-2 py-0.5 rounded-full text-[11px] font-mono border flex items-center gap-1.5 ${
+                worktreeFiles.length > 0
+                  ? 'bg-emerald-950/70 text-emerald-400 border-emerald-800'
+                  : 'bg-zinc-800/70 text-zinc-400 border-zinc-700'
+              }`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${worktreeFiles.length > 0 ? 'bg-emerald-400 animate-pulse' : 'bg-zinc-500'}`}></span>
+                <span>{worktreeFiles.length} file changes recorded from CLIs</span>
+              </span>
             </div>
           ) : (
             <div className="flex items-center gap-2 text-zinc-300 truncate">
               <span className="font-bold text-zinc-100 flex items-center gap-1.5">
                 <span>{currentTabDef?.icon}</span>
-                <span>{currentTabDef?.name} CLI</span>
+                <span>{currentTabDef?.name}</span>
+              </span>
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-purple-950/80 text-purple-300 border border-purple-800/50">
+                Native CLI
               </span>
               <span className="text-zinc-600">·</span>
-              {isCliRunning(selectedAgentFilter) ? (
+              {activeToolSessions[selectedAgentFilter] ? (
+                <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-sky-950/80 text-sky-400 border border-sky-800 text-[11px] font-mono animate-pulse">
+                  <span className="w-2 h-2 rounded-full bg-sky-400"></span>
+                  Native Shell Active
+                </span>
+              ) : isCliRunning(selectedAgentFilter) ? (
                 <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-950/80 text-emerald-400 border border-emerald-800 text-[11px] font-mono animate-pulse">
                   <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-                  Executing with {activeModel}
+                  Executing Task ({activeModel})
                 </span>
               ) : (outputCounts[selectedAgentFilter] || 0) > 0 ? (
                 <span className="px-2 py-0.5 rounded-full bg-sky-950/60 text-sky-400 border border-sky-800 text-[11px] font-mono">
@@ -679,7 +838,7 @@ export default function TerminalView() {
                 </span>
               ) : (
                 <span className="px-2 py-0.5 rounded-full bg-zinc-800/80 text-zinc-400 border border-zinc-700 text-[11px] font-mono">
-                  Standby · Ready to run
+                  Standby · Native binary ready
                 </span>
               )}
             </div>
@@ -687,15 +846,72 @@ export default function TerminalView() {
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
-          {selectedAgentFilter !== 'all' && (
-            <>
+          {selectedAgentFilter === 'all' ? (
+            <div className="flex items-center gap-2">
+              <label className="flex items-center gap-1.5 text-[11px] text-zinc-400 hover:text-zinc-200 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={autoFeedRecordedChanges}
+                  onChange={(e) => setAutoFeedRecordedChanges(e.target.checked)}
+                  className="rounded border-zinc-700 bg-zinc-900 text-sky-500 focus:ring-0 focus:ring-offset-0"
+                />
+                <span>Feed recorded changes to prompt</span>
+              </label>
+              <div className="flex items-center gap-1 bg-[#181820] border border-[#272734] rounded-lg px-2 py-0.5 text-[11px]">
+                <span className="text-zinc-500">Target CLI:</span>
+                <select
+                  value={targetNativeCli}
+                  onChange={(e) => setTargetNativeCli(e.target.value)}
+                  className="bg-transparent text-zinc-200 font-bold outline-none cursor-pointer"
+                >
+                  <option value="OpenCode" className="bg-[#181820]">OpenCode</option>
+                  <option value="Codex" className="bg-[#181820]">Codex</option>
+                  <option value="Antigravity" className="bg-[#181820]">Antigravity</option>
+                  <option value="Claude Code" className="bg-[#181820]">Claude Code</option>
+                  <option value="Aider" className="bg-[#181820]">Aider</option>
+                </select>
+              </div>
+              {task?.status === 'working' && (
+                <button
+                  onClick={() => stopTask(terminalTaskId)}
+                  className="px-2.5 py-1 bg-red-950/70 hover:bg-red-900 border border-red-800 text-red-300 font-bold text-[11px] rounded-lg flex items-center gap-1 transition-colors"
+                >
+                  <Square className="w-3 h-3" />
+                  <span>Stop Agent</span>
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="flex items-center gap-1.5">
+              {/* Native Interactive Shell Toggle */}
+              {activeToolSessions[selectedAgentFilter] ? (
+                <button
+                  onClick={() => handleKillNativeShell(selectedAgentFilter)}
+                  className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 border border-zinc-600 text-zinc-200 font-bold text-[11px] rounded-lg flex items-center gap-1 transition-colors"
+                  title="Disconnect interactive native shell"
+                >
+                  <Square className="w-3 h-3" />
+                  <span>Exit Native Shell</span>
+                </button>
+              ) : (
+                <button
+                  onClick={() => handleLaunchNativeShell(selectedAgentFilter)}
+                  className="px-2.5 py-1 bg-sky-950/70 hover:bg-sky-900 border border-sky-700 text-sky-300 font-bold text-[11px] rounded-lg flex items-center gap-1.5 transition-colors shadow-sm"
+                  title={`Spawn real native ${selectedAgentFilter} process in worktree`}
+                >
+                  <TerminalIcon className="w-3 h-3" />
+                  <span>Launch Native Shell</span>
+                </button>
+              )}
+
+              {/* Task Execution Toggle */}
               {isCliRunning(selectedAgentFilter) ? (
                 <button
                   onClick={handleStopCli}
                   className="px-2.5 py-1 bg-red-950/70 hover:bg-red-900 border border-red-800 text-red-300 font-bold text-[11px] rounded-lg flex items-center gap-1 transition-colors"
                 >
                   <Square className="w-3 h-3" />
-                  <span>Stop {selectedAgentFilter}</span>
+                  <span>Stop Task</span>
                 </button>
               ) : (
                 <button
@@ -708,7 +924,7 @@ export default function TerminalView() {
                   <span>Run with {selectedAgentFilter}</span>
                 </button>
               )}
-            </>
+            </div>
           )}
 
           <button
@@ -1011,6 +1227,74 @@ export default function TerminalView() {
                       }`}
                     />
                   </button>
+                </div>
+              </div>
+
+              {/* CLI Change Recorder (Custom Agent Bridge) */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                    <span>CLI Change Recorder (Custom Agent)</span>
+                  </div>
+                  <span className="text-[10px] text-zinc-400 font-mono">
+                    {worktreeFiles.length} files recorded
+                  </span>
+                </div>
+                <div className="bg-[#131318] border border-[#1f1f28] rounded-xl p-3 space-y-2.5">
+                  <div className="text-xs text-zinc-300 flex items-center justify-between">
+                    <span className="font-semibold text-zinc-200">Recorded Native CLI Changes:</span>
+                    <button
+                      onClick={() => {
+                        if (worktreeFiles.length === 0) return;
+                        const fileSummary = worktreeFiles.map((f) => f.path).join(', ');
+                        setInputCommand((prev) => `Review and build on recent CLI changes to ${fileSummary}: ${prev}`);
+                      }}
+                      disabled={worktreeFiles.length === 0}
+                      className="text-[10px] px-2 py-0.5 rounded bg-sky-950/80 hover:bg-sky-900 border border-sky-800 text-sky-300 font-mono disabled:opacity-40 transition-colors"
+                      title="Inject recorded changes into prompt bar"
+                    >
+                      + Inject into Prompt
+                    </button>
+                  </div>
+                  {worktreeFiles.length > 0 ? (
+                    <div className="max-h-40 overflow-y-auto space-y-1 pr-1 font-mono text-[11px]">
+                      {worktreeFiles.map((file, idx) => (
+                        <div key={idx} className="flex items-center justify-between py-0.5 px-2 rounded bg-[#181820] text-zinc-300 border border-zinc-800/60">
+                          <span className="truncate max-w-[260px]">{file.path}</span>
+                          <span className={`text-[10px] px-1.5 py-0.2 rounded font-bold ${
+                            file.index === 'A' || file.working_dir === '?' ? 'bg-emerald-950 text-emerald-400 border border-emerald-800/50' :
+                            file.index === 'D' || file.working_dir === 'D' ? 'bg-red-950 text-red-400 border border-red-800/50' :
+                            'bg-amber-950 text-amber-400 border border-amber-800/50'
+                          }`}>
+                            {file.index === 'A' || file.working_dir === '?' ? 'ADDED' :
+                             file.index === 'D' || file.working_dir === 'D' ? 'DELETED' : 'MODIFIED'}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-[11px] text-zinc-500 italic">
+                      No changes recorded yet. When native CLIs (OpenCode, Codex, Antigravity, Claude Code) make edits, the custom agent automatically records them here to feed into prompts.
+                    </div>
+                  )}
+
+                  {worktreeDiff ? (
+                    <div className="pt-1 border-t border-zinc-800/60">
+                      <button
+                        type="button"
+                        onClick={() => setShowRecordedDiff(!showRecordedDiff)}
+                        className="text-[10px] text-zinc-400 hover:text-sky-300 font-mono flex items-center gap-1 transition-colors"
+                      >
+                        <span>{showRecordedDiff ? '▼ Hide' : '▶ Show'} recorded diff ({worktreeDiff.split('\n').length} lines)</span>
+                      </button>
+                      {showRecordedDiff && (
+                        <pre className="mt-1.5 p-2 bg-[#09090d] border border-zinc-800 rounded-lg text-[10px] font-mono text-zinc-300 max-h-36 overflow-y-auto whitespace-pre-wrap leading-tight">
+                          {worktreeDiff}
+                        </pre>
+                      )}
+                    </div>
+                  ) : null}
                 </div>
               </div>
 

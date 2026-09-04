@@ -607,7 +607,7 @@ ipcMain.handle('save-tool-secret', (_e, payload: { toolId: string; label: string
   saveToolSecret(payload.toolId as any, payload.label, payload.secret)
   return { success: true }
 })
-ipcMain.handle('run-tool-action', async (event, payload: { toolId: string; kind: 'install' | 'auth' | 'terminal'; secret?: string }) => {
+ipcMain.handle('run-tool-action', async (event, payload: { toolId: string; kind: 'install' | 'auth' | 'terminal'; secret?: string; cwd?: string }) => {
   const { sessionId, promise } = runToolAction(
     payload.toolId as any,
     payload.kind,
@@ -620,10 +620,29 @@ ipcMain.handle('run-tool-action', async (event, payload: { toolId: string; kind:
         .catch((error) => console.error('Tool status refresh failed:', error))
     },
     payload.secret,
+    payload.cwd,
   )
 
   activeToolSessions.set(sessionId, { toolId: payload.toolId, kind: payload.kind, sessionId })
   event.sender.send('tool-action-started', payload.toolId, sessionId, payload.kind)
+
+  if (payload.kind === 'terminal') {
+    promise
+      .then(async (result) => {
+        activeToolSessions.delete(sessionId)
+        const statuses = await refreshToolStatuses().catch((error) => {
+          console.error('Tool status refresh failed:', error)
+          return null
+        })
+        if (statuses) emit('tool-statuses-changed', statuses)
+        event.sender.send('tool-action-ended', payload.toolId, sessionId, result.exitCode, result.rawOutput)
+      })
+      .catch((error) => {
+        activeToolSessions.delete(sessionId)
+        console.error('Terminal session error:', error)
+      })
+    return { sessionId }
+  }
 
   const result = await promise
   activeToolSessions.delete(sessionId)
@@ -1036,6 +1055,19 @@ ipcMain.handle('get-worktree-files', async (_e, taskId: string) => {
     }))
   } catch {
     return []
+  }
+})
+
+ipcMain.handle('get-worktree-diff', async (_e, taskId: string) => {
+  const job = getJob(taskId)
+  if (!job) return ''
+  const targetDir = job.worktree || getProjects().find((p: any) => p.is_active === 1)?.path || '.'
+  try {
+    const git = simpleGit(targetDir)
+    const diff = await git.diff()
+    return diff || ''
+  } catch {
+    return ''
   }
 })
 

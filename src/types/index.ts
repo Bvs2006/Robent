@@ -214,7 +214,7 @@ declare global {
       getToolSetupCompleted: () => Promise<{ completed: boolean }>
       setToolSetupCompleted: (completed: boolean) => Promise<{ completed: boolean }>
       saveToolSecret: (payload: { toolId: ToolId; label: string; secret: string }) => Promise<any>
-      runToolAction: (payload: { toolId: ToolId; kind: 'install' | 'auth' | 'terminal'; secret?: string }) => Promise<any>
+      runToolAction: (payload: { toolId: ToolId; kind: 'install' | 'auth' | 'terminal'; secret?: string; cwd?: string }) => Promise<any>
       writeToolInput: (payload: { sessionId: string; data: string }) => Promise<{ ok: boolean }>
       killToolSession: (sessionId: string) => Promise<{ ok: boolean }>
       getToolAuthCapabilities: () => Promise<Array<{
@@ -238,6 +238,7 @@ declare global {
       createWorktree: (payload: { branchName: string; baseBranch?: string; workdir?: string }) => Promise<any>
       listBranches: (workdir?: string) => Promise<{ current: string; all: string[] }>
       getWorktreeFiles: (taskId: string) => Promise<Array<{ path: string; index: string; working_dir: string }>>
+      getWorktreeDiff: (taskId: string) => Promise<string>
       getTaskPreview: (taskId: string) => Promise<{ url: string; port?: number; file?: string; type: 'server' | 'file' } | null>
       getMcpServers: () => Promise<any[]>
       getCapabilityRegistry: () => Promise<any>

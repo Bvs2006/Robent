@@ -524,6 +524,7 @@ export function runToolAction(
   onOutput: (chunk: string) => void,
   onSuccessSignal?: (chunk: string) => void,
   secret?: string,
+  cwd?: string,
 ): ToolActionResult {
   const def = TOOL_DEFINITIONS[toolId]
   const sessionId = `${toolId}-${Math.random().toString(36).slice(2, 9)}`
@@ -532,7 +533,7 @@ export function runToolAction(
   if (kind === 'install') {
     commandLine = normalizeWindowsCommandLine(def.installCommand)
   } else if (kind === 'terminal') {
-    commandLine = def.binary
+    commandLine = resolveToolBinary(def.binary)
   } else if (toolId === 'aider') {
     if (secret) saveToolSecret(toolId, 'Aider API key', secret)
     commandLine = 'echo Aider API key saved.'
@@ -542,7 +543,7 @@ export function runToolAction(
     commandLine = shellCommandLine(loginCommand, loginArgs)
   }
 
-  const { ptyProcess, promise } = runShellCommand(commandLine, process.cwd(), (chunk) => {
+  const { ptyProcess, promise } = runShellCommand(commandLine, cwd || process.cwd(), (chunk) => {
     onOutput(chunk)
     if (onSuccessSignal && hasAnyPattern(chunk, def.authSuccessPatterns)) {
       onSuccessSignal(chunk)

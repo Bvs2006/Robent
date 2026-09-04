@@ -36,6 +36,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   createWorktree: (payload) => ipcRenderer.invoke('create-worktree', payload),
   listBranches: (workdir) => ipcRenderer.invoke('list-branches', workdir),
   getWorktreeFiles: (taskId) => ipcRenderer.invoke('get-worktree-files', taskId),
+  getWorktreeDiff: (taskId) => ipcRenderer.invoke('get-worktree-diff', taskId),
   getTaskPreview: (taskId) => ipcRenderer.invoke('get-task-preview', taskId),
 
   // MCP Servers
