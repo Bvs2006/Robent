@@ -90,9 +90,13 @@ function createWindow() {
     : undefined
 
   win = new BrowserWindow({
-    width: 1440,
-    height: 900,
+    title: 'Robent — Agent Orchestration',
+    width: 1280,
+    height: 800,
+    minWidth: 1024,
+    minHeight: 700,
     icon: iconCandidate,
+    show: true,
     titleBarStyle: 'hidden',
     titleBarOverlay: {
       color: '#09090b',
@@ -104,6 +108,11 @@ function createWindow() {
       nodeIntegration: false,
       contextIsolation: true,
     },
+  })
+
+  win.once('ready-to-show', () => {
+    win?.show()
+    win?.focus()
   })
 
   if (VITE_DEV_SERVER_URL) {
