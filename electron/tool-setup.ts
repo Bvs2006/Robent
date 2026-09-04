@@ -1,6 +1,7 @@
 import { execa } from 'execa'
 import { spawnPty, type IPty } from './pty.js'
 import * as os from 'os'
+import { execSync } from 'child_process'
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { safeStorage } from 'electron'
@@ -206,6 +207,32 @@ export function toolEnv(): Record<string, string> {
   delete env.path
   env.PATH = merged.join(';')
   return env
+}
+
+export function resolveToolBinary(binary: string): string {
+  if (os.platform() !== 'win32') return binary
+  if (existsSync(binary)) return binary
+
+  try {
+    const lines = (execSync(`where.exe ${binary}`, {
+      env: toolEnv(),
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'ignore'],
+    }) as string)
+      .trim()
+      .split(/\r?\n/)
+      .map((s: string) => s.trim())
+      .filter(Boolean)
+
+    if (lines.length === 0) return binary
+    // Prefer .cmd, .exe, .bat on Windows
+    const executable = lines.find((l: string) =>
+      /\.(cmd|exe|bat)$/i.test(l),
+    )
+    return executable || lines[0] || binary
+  } catch {
+    return binary
+  }
 }
 
 async function captureShellCommand(commandLine: string, timeout: number) {

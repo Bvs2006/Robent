@@ -455,15 +455,14 @@ export function syncCapabilitiesForDriver(driverName: string, workdir: string, c
 export function composePromptForDriver(driverName: string, prompt: string, context: SyncContext = {}): string {
   const normalized = driverName.toLowerCase().replace(/\s+/g, '-')
   const registry = getCapabilityRegistry()
-  const selectedSkills = selectSkills(registry.skills, context.skillIds)
-
   const sections: string[] = []
 
-  if (selectedSkills.length > 0) {
-    sections.push(selectedSkills.map((skill) => `## Skill: ${skill.name}\n${skill.description ? `> ${skill.description}\n\n` : ''}${skill.content}`).join('\n\n'))
-  }
-
+  // If driver does not natively discover file-based skills (like Aider), inject them into prompt text
   if (normalized.includes('aider')) {
+    const selectedSkills = selectSkills(registry.skills, context.skillIds)
+    if (selectedSkills.length > 0) {
+      sections.push(selectedSkills.map((skill) => `## Skill: ${skill.name}\n${skill.description ? `> ${skill.description}\n\n` : ''}${skill.content}`).join('\n\n'))
+    }
     const enabledServers = registry.mcpServers.filter((s) => s.enabled)
     if (enabledServers.length > 0) {
       sections.push(`## Available Tools & MCP Servers\n` + enabledServers.map((s) => `- **${s.name}** (${s.transport}): ${s.command || s.url}`).join('\n'))

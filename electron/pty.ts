@@ -33,16 +33,27 @@ class ChildProcessPtyFallback {
 
   constructor(file: string, args: string[] | string, opt: any) {
     const isWin = os.platform() === 'win32'
-    const shell = isWin ? 'cmd.exe' : 'bash'
-    const fullCmd = Array.isArray(args) ? [file, ...args].join(' ') : `${file} ${args}`
-    const shellArgs = isWin ? ['/d', '/s', '/c', fullCmd] : ['-lc', fullCmd]
+    const isShell = /^(cmd(\.exe)?|bash|sh|powershell(\.exe)?)$/i.test(file)
 
-    this.proc = cpSpawn(shell, shellArgs, {
-      cwd: opt.cwd,
-      env: opt.env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-    })
+    if (isShell) {
+      const fullCmd = Array.isArray(args) ? args.join(' ') : args
+      const shellArgs = isWin ? ['/d', '/s', '/c', fullCmd] : ['-lc', fullCmd]
+      this.proc = cpSpawn(file, shellArgs, {
+        cwd: opt.cwd,
+        env: opt.env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+      })
+    } else {
+      const spawnArgs = Array.isArray(args) ? args : [args]
+      this.proc = cpSpawn(file, spawnArgs, {
+        cwd: opt.cwd,
+        env: opt.env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+        shell: isWin && /\.(cmd|bat)$/i.test(file),
+      })
+    }
 
     this.pid = this.proc.pid || 0
 

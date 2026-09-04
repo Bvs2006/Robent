@@ -8,7 +8,7 @@ import { spawnPty } from './pty.js'
 import type { IPty } from './pty.js'
 import * as os from 'os'
 import { execSync } from 'child_process'
-import { toolEnv } from './tool-setup.js'
+import { toolEnv, resolveToolBinary } from './tool-setup.js'
 
 export interface TaskResult {
   status: 'success' | 'failed'
@@ -19,17 +19,6 @@ export interface TaskResult {
 }
 
 type OutputCallback = (chunk: string) => void
-
-function quoteArg(arg: string): string {
-  if (os.platform() === 'win32') {
-    // Replace newlines so cmd.exe /c doesn't split the command line
-    const sanitized = arg.replace(/\r\n/g, ' ').replace(/[\r\n]/g, ' ')
-    if (!/[\s&<>|^()"]/.test(sanitized)) return sanitized
-    return `"${sanitized.replace(/"/g, '\\"')}"`
-  }
-  if (/^[A-Za-z0-9_./:=+-]+$/.test(arg)) return arg
-  return `'${arg.replace(/'/g, `'\\''`)}'`
-}
 
 export interface DriverOptions {
   model?: string
@@ -60,11 +49,7 @@ export abstract class BaseDriver {
 
     const promise = new Promise<TaskResult>((resolve) => {
       const { command, args } = this.getCommandAndArgs(task, options)
-      const isWin = os.platform() === 'win32'
-      const shell = isWin ? 'cmd.exe' : 'bash'
-      const fullCmd = [command, ...args.map(quoteArg)].join(' ')
-      // On Windows, pass fullCmd directly to /d /s /c without outer quotes so cmd.exe executes it properly
-      const shellArgs = isWin ? ['/d', '/s', '/c', fullCmd] : ['-lc', fullCmd]
+      const resolvedBinary = resolveToolBinary(command)
       let settled = false
 
       const finish = (result: TaskResult) => {
@@ -77,7 +62,7 @@ export abstract class BaseDriver {
         resolve(result)
       }
 
-      this.ptyProcess = spawnPty(shell, shellArgs, {
+      this.ptyProcess = spawnPty(resolvedBinary, args, {
         name: 'xterm-color',
         cols: 120,
         rows: 40,
