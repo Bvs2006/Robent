@@ -149,8 +149,15 @@ export abstract class BaseDriver {
 }
 
 export class ClaudeCodeDriver extends BaseDriver {
-  getCommandAndArgs(task: string) {
-    return { command: 'claude', args: ['-p', task] }
+  getCommandAndArgs(task: string, options?: DriverOptions) {
+    const args = ['-p', task]
+    if (!options?.approvalMode) {
+      args.push('--dangerously-skip-permissions')
+    }
+    if (options?.model) {
+      args.push('--model', options.model)
+    }
+    return { command: 'claude', args }
   }
   protected parseResult(raw: string): Partial<TaskResult> {
     try {
@@ -172,13 +179,23 @@ export class CodexDriver extends BaseDriver {
     if (!options?.approvalMode) {
       args.push('--full-auto')
     }
+    if (options?.model) {
+      args.push('--model', options.model)
+    }
     return { command: 'codex', args }
   }
 }
 
 export class AntigravityDriver extends BaseDriver {
-  getCommandAndArgs(task: string) {
-    return { command: 'agy', args: ['-p', task] }
+  getCommandAndArgs(task: string, options?: DriverOptions) {
+    const args = ['-p', task]
+    if (!options?.approvalMode) {
+      args.push('--dangerously-skip-permissions')
+    }
+    if (options?.model) {
+      args.push('--model', options.model)
+    }
+    return { command: 'agy', args }
   }
   protected parseResult(raw: string): Partial<TaskResult> {
     if (raw.includes('Authentication required') || raw.includes('not logged in')) {
@@ -223,13 +240,20 @@ export class OpenCodeDriver extends BaseDriver {
 }
 
 export class CursorDriver extends BaseDriver {
-  getCommandAndArgs(task: string) {
-    return { command: 'agent', args: ['-p', task, '--force'] }
+  getCommandAndArgs(task: string, options?: DriverOptions) {
+    const args = ['-p', task]
+    if (!options?.approvalMode) {
+      args.push('--force')
+    }
+    if (options?.model) {
+      args.push('--model', options.model)
+    }
+    return { command: 'agent', args }
   }
 }
 
 export class GithubCopilotDriver extends BaseDriver {
-  getCommandAndArgs(task: string) {
+  getCommandAndArgs(task: string, _options?: DriverOptions) {
     return { command: 'gh', args: ['copilot', 'suggest', '-t', 'shell', task] }
   }
   protected parseResult(raw: string): Partial<TaskResult> {
@@ -243,7 +267,7 @@ export class GithubCopilotDriver extends BaseDriver {
 }
 
 export class DummyDriver extends BaseDriver {
-  getCommandAndArgs(task: string) {
+  getCommandAndArgs(task: string, _options?: DriverOptions) {
     return { command: 'echo', args: [`[Robent] Running: ${task.substring(0, 80)}...`] }
   }
 }

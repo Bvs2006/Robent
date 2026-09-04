@@ -49,7 +49,7 @@ export const TOOL_DEFINITIONS: Record<ToolId, ToolDefinition> = {
     versionFlag: '--version',
     installCommand: 'npm install -g @anthropic-ai/claude-code',
     authCommand: 'claude',
-    authArgs: ['-p', 'Return READY if authenticated.', '--output-format', 'json'],
+    authArgs: ['auth', 'login'],
     authProbeCommand: 'claude',
     authProbeArgs: ['auth', 'status'],
     authProbeStrict: true,
@@ -294,12 +294,44 @@ function hasAnyPattern(raw: string, patterns: RegExp[]): boolean {
 async function detectAuth(tool: ToolDefinition, installed: boolean): Promise<{ status: ToolStatus; details?: string | null }> {
   if (!installed) return { status: 'not-installed' }
 
+  if (tool.id === 'claude-code' && process.env.ANTHROPIC_API_KEY?.trim()) {
+    return { status: 'ready', details: 'Authenticated via ANTHROPIC_API_KEY environment variable.' }
+  }
+
   if (tool.id === 'aider') {
     const secret = getToolSecret(tool.id)
     if (secret?.secret_encrypted) {
-      return { status: 'ready' }
+      return { status: 'ready', details: 'API key configured in Robent secrets.' }
     }
-    return { status: 'installed-not-signed-in' }
+
+    const standardEnvKeys = [
+      'OPENAI_API_KEY',
+      'ANTHROPIC_API_KEY',
+      'GEMINI_API_KEY',
+      'GOOGLE_API_KEY',
+      'AIDER_API_KEY',
+      'DEEPSEEK_API_KEY',
+      'OPENROUTER_API_KEY',
+      'GROQ_API_KEY',
+      'MISTRAL_API_KEY',
+      'XAI_API_KEY',
+      'COHERE_API_KEY',
+    ]
+    const matchedEnv = standardEnvKeys.find((key) => Boolean(process.env[key]?.trim()))
+    if (matchedEnv) {
+      return { status: 'ready', details: `Authenticated via environment variable (${matchedEnv}).` }
+    }
+
+    const home = process.env.USERPROFILE || os.homedir()
+    const aiderConf = join(home, '.aider.conf.yml')
+    if (existsSync(aiderConf)) {
+      return { status: 'ready', details: 'Configured via ~/.aider.conf.yml' }
+    }
+
+    return {
+      status: 'installed-not-signed-in',
+      details: 'No API key detected. Set OPENAI_API_KEY/ANTHROPIC_API_KEY in environment or save in Settings -> Tool Setup.',
+    }
   }
 
   if (!tool.authCommand || !tool.authArgs) {

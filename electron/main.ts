@@ -200,6 +200,16 @@ function buildAgentEnv(agent: string): Record<string, string> {
       if (label.includes('ANTHROPIC') || label.includes('CLAUDE')) env.ANTHROPIC_API_KEY = secret
       if (label.includes('AIDER')) env.AIDER_API_KEY = secret
       if (label.includes('GITHUB')) env.GITHUB_TOKEN = secret
+      if (label.includes('GEMINI') || label.includes('GOOGLE')) {
+        env.GEMINI_API_KEY = secret
+        env.GOOGLE_API_KEY = env.GOOGLE_API_KEY || secret
+      }
+      if (label.includes('DEEPSEEK')) env.DEEPSEEK_API_KEY = secret
+      if (label.includes('OPENROUTER')) env.OPENROUTER_API_KEY = secret
+      if (label.includes('GROQ')) env.GROQ_API_KEY = secret
+      if (label.includes('MISTRAL')) env.MISTRAL_API_KEY = secret
+      if (label.includes('XAI')) env.XAI_API_KEY = secret
+      if (label.includes('COHERE')) env.COHERE_API_KEY = secret
     } catch (error) {
       console.warn('Failed to decrypt credential:', error)
     }
