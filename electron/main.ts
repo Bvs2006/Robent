@@ -97,18 +97,16 @@ function createWindow() {
     minHeight: 700,
     icon: iconCandidate,
     show: true,
-    titleBarStyle: 'hidden',
-    titleBarOverlay: {
-      color: '#09090b',
-      symbolColor: '#a1a1aa',
-      height: 40,
-    },
+    autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, 'preload.mjs'),
       nodeIntegration: false,
       contextIsolation: true,
     },
   })
+
+  win.show()
+  win.focus()
 
   win.once('ready-to-show', () => {
     win?.show()

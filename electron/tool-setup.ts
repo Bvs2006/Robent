@@ -406,8 +406,6 @@ export async function refreshToolStatuses(): Promise<ToolSnapshot[]> {
       lastCheckedAt: new Date().toISOString(),
     }
 
-    console.log(`[Tool Detection Regression Log] ${snapshot.name} (${snapshot.toolId}) => status: ${snapshot.authStatus} | raw details: ${JSON.stringify(snapshot.details)}`)
-
     upsertToolStatus({
       toolId: snapshot.toolId,
       name: snapshot.name,
