@@ -14,32 +14,42 @@ const vite = spawn('npx', ['vite', '--port', '1420'], {
 });
 
 let electronStarted = false;
-function checkViteReady(retries = 40) {
+let checkTimer = null;
+
+function checkViteReady(retries = 60) {
+  if (electronStarted) return;
   if (retries <= 0) {
     console.error('❌ Vite dev server timed out.');
     try { vite.kill(); } catch (e) {}
     process.exit(1);
   }
-  http.get('http://localhost:1420', () => {
+
+  const req = http.get('http://localhost:1420', (res) => {
+    if (electronStarted) return;
+    electronStarted = true;
+    if (checkTimer) clearTimeout(checkTimer);
+
+    console.log('💻 Launching Robent Desktop App...');
+    const electronApp = spawn(electronPath, ['.', '--no-sandbox'], {
+      cwd: process.cwd(),
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        VITE_DEV_SERVER_URL: 'http://localhost:1420',
+      },
+    });
+
+    electronApp.on('exit', (code) => {
+      console.log('Robent Desktop closed.');
+      try { vite.kill(); } catch (e) {}
+      process.exit(code || 0);
+    });
+  });
+
+  req.on('error', () => {
     if (!electronStarted) {
-      electronStarted = true;
-      console.log('💻 Launching Robent Desktop App...');
-      const electronApp = spawn(electronPath, ['.', '--no-sandbox'], {
-        cwd: process.cwd(),
-        stdio: 'inherit',
-        env: {
-          ...process.env,
-          VITE_DEV_SERVER_URL: 'http://localhost:1420',
-        },
-      });
-      electronApp.on('exit', (code) => {
-        console.log('Robent Desktop closed.');
-        try { vite.kill(); } catch (e) {}
-        process.exit(code || 0);
-      });
+      checkTimer = setTimeout(() => checkViteReady(retries - 1), 500);
     }
-  }).on('error', () => {
-    setTimeout(() => checkViteReady(retries - 1), 300);
   });
 }
 
