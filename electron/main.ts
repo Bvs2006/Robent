@@ -17,7 +17,8 @@ if (typeof (globalThis as any).__filename === 'undefined') {
 }
 
 import { app, BrowserWindow, ipcMain, safeStorage, dialog, shell } from 'electron'
-import { autoUpdater } from 'electron-updater'
+import electronUpdater from 'electron-updater'
+const autoUpdater = (electronUpdater as any)?.autoUpdater || (electronUpdater as any)?.default?.autoUpdater || electronUpdater
 import type { ChildProcess } from 'child_process'
 import { existsSync, mkdirSync, readdirSync, statSync } from 'fs'
 import { simpleGit } from 'simple-git'
@@ -179,20 +180,20 @@ if (!gotSingleInstanceLock) {
       autoUpdater.autoDownload = true
       autoUpdater.autoInstallOnAppQuit = true
 
-      autoUpdater.on('update-available', (info) => {
+      autoUpdater.on('update-available', (info: any) => {
         emit('update-status', { status: 'available', version: info.version })
       })
 
-      autoUpdater.on('download-progress', (progress) => {
+      autoUpdater.on('download-progress', (progress: any) => {
         emit('update-status', { status: 'downloading', percent: Math.round(progress.percent) })
       })
 
-      autoUpdater.on('update-downloaded', (info) => {
+      autoUpdater.on('update-downloaded', (info: any) => {
         emit('update-status', { status: 'downloaded', version: info.version })
       })
 
-      autoUpdater.on('error', (err) => {
-        emit('update-status', { status: 'error', error: err.message })
+      autoUpdater.on('error', (err: any) => {
+        emit('update-status', { status: 'error', error: err?.message || String(err) })
       })
 
       setTimeout(() => {
