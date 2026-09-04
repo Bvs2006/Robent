@@ -97,6 +97,16 @@ function App() {
         }))
         useFleetStore.getState().addNotification('success', `Preview ready on localhost:${port}`)
       })
+
+      if (window.electronAPI.onUpdateStatus) {
+        window.electronAPI.onUpdateStatus((statusInfo: any) => {
+          if (statusInfo?.status === 'available') {
+            useFleetStore.getState().addNotification('info', `New update v${statusInfo.version} found — downloading...`)
+          } else if (statusInfo?.status === 'downloaded') {
+            useFleetStore.getState().addNotification('success', `Update v${statusInfo.version} ready! Restart the app to apply.`)
+          }
+        })
+      }
     }
 
     // Cmd/Ctrl+K → command palette, Cmd/Ctrl+N → new task

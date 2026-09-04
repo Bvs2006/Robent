@@ -18,7 +18,7 @@ export default defineConfig({
           },
           build: {
             rollupOptions: {
-              external: ['better-sqlite3', 'node-pty', 'simple-git', 'execa'],
+              external: ['better-sqlite3', 'node-pty', 'simple-git', 'execa', 'electron-updater'],
             },
           },
         },

@@ -17,6 +17,7 @@ if (typeof (globalThis as any).__filename === 'undefined') {
 }
 
 import { app, BrowserWindow, ipcMain, safeStorage, dialog, shell } from 'electron'
+import { autoUpdater } from 'electron-updater'
 import type { ChildProcess } from 'child_process'
 import { existsSync, mkdirSync, readdirSync, statSync } from 'fs'
 import { simpleGit } from 'simple-git'
@@ -172,6 +173,32 @@ if (!gotSingleInstanceLock) {
       console.error('DB init error:', e)
     }
     createWindow()
+
+    // Auto-update checking for packaged desktop application
+    if (app.isPackaged) {
+      autoUpdater.autoDownload = true
+      autoUpdater.autoInstallOnAppQuit = true
+
+      autoUpdater.on('update-available', (info) => {
+        emit('update-status', { status: 'available', version: info.version })
+      })
+
+      autoUpdater.on('download-progress', (progress) => {
+        emit('update-status', { status: 'downloading', percent: Math.round(progress.percent) })
+      })
+
+      autoUpdater.on('update-downloaded', (info) => {
+        emit('update-status', { status: 'downloaded', version: info.version })
+      })
+
+      autoUpdater.on('error', (err) => {
+        emit('update-status', { status: 'error', error: err.message })
+      })
+
+      setTimeout(() => {
+        autoUpdater.checkForUpdates().catch(() => undefined)
+      }, 5000)
+    }
   })
 }
 
@@ -1287,3 +1314,20 @@ setInterval(() => {
     emit('runtime-tick', runtimes)
   }
 }, 1000)
+
+// ─── IPC: Auto Updater ────────────────────────────────────────────────────────
+ipcMain.handle('check-for-updates', async () => {
+  if (!app.isPackaged) return { isPackaged: false, message: 'Updates only run in packaged desktop builds' }
+  try {
+    const res = await autoUpdater.checkForUpdates()
+    return { success: true, updateInfo: res?.updateInfo }
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Update check failed' }
+  }
+})
+
+ipcMain.handle('restart-and-update', () => {
+  if (app.isPackaged) {
+    autoUpdater.quitAndInstall()
+  }
+})

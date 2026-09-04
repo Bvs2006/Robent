@@ -144,5 +144,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('tool-statuses-changed', listener)
     return () => ipcRenderer.removeListener('tool-statuses-changed', listener)
   },
+
+  // Auto Updater
+  checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+  restartAndUpdate: () => ipcRenderer.invoke('restart-and-update'),
+  onUpdateStatus: (cb) => {
+    const listener = (_e, status) => cb(status)
+    ipcRenderer.on('update-status', listener)
+    return () => ipcRenderer.removeListener('update-status', listener)
+  },
+
   removeAllListeners: (channel) => ipcRenderer.removeAllListeners(channel),
 })

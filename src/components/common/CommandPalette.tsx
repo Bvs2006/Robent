@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Search, Plus, Layout, GitBranch, Terminal, Monitor, Settings, Wrench, Key, OctagonAlert, Shield, FolderPlus, Keyboard } from 'lucide-react';
+import { Search, Plus, Layout, GitBranch, Terminal, Monitor, Settings, Wrench, Key, OctagonAlert, Shield, FolderPlus, Keyboard, RefreshCw } from 'lucide-react';
 import { useFleetStore } from '../../store/fleetStore';
 
 export default function CommandPalette() {
@@ -15,6 +15,7 @@ export default function CommandPalette() {
     killAll,
     approvalMode,
     setApprovalMode,
+    addNotification,
   } = useFleetStore();
   const [search, setSearch] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -23,6 +24,26 @@ export default function CommandPalette() {
   const allCommands = [
     { id: 'new-task', title: 'Create new task', icon: Plus, action: () => setShowNewTaskModal(true) },
     { id: 'dashboard', title: 'Dashboard', icon: Layout, action: () => setCurrentPage('dashboard') },
+    {
+      id: 'check-updates',
+      title: 'Check for Application Updates',
+      icon: RefreshCw,
+      action: async () => {
+        if (!window.electronAPI?.checkForUpdates) {
+          addNotification('info', 'Running in local dev mode — updates only available in desktop build');
+          return;
+        }
+        addNotification('info', 'Checking for updates...');
+        const res = await window.electronAPI.checkForUpdates();
+        if (res?.isPackaged === false) {
+          addNotification('info', 'Running in local dev mode — updates only run in desktop build');
+        } else if (res?.success === false) {
+          addNotification('error', `Update check: ${res.error || 'No update available'}`);
+        } else {
+          addNotification('success', 'Checking GitHub for newer releases...');
+        }
+      },
+    },
     { id: 'shortcuts', title: 'Keyboard Shortcuts & Quick Help', icon: Keyboard, action: () => setShowShortcutsModal(true) },
     { id: 'tool-setup', title: 'CLI Tool Setup & Diagnostics', icon: Wrench, action: () => setShowToolSetupModal(true) },
     { id: 'orchestrator', title: 'Orchestrator Credentials & Auth', icon: Key, action: () => setShowOrchestrator(true) },

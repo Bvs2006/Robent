@@ -290,6 +290,9 @@ declare global {
       onToolActionStarted: (cb: (toolId: ToolId, sessionId: string, kind: 'install' | 'auth' | 'terminal') => void) => () => void
       onToolActionEnded: (cb: (toolId: ToolId, sessionId: string, exitCode: number, output: string) => void) => () => void
       onToolStatusesChanged: (cb: (statuses: ToolStatusRecord[]) => void) => () => void
+      checkForUpdates?: () => Promise<any>
+      restartAndUpdate?: () => Promise<any>
+      onUpdateStatus?: (cb: (status: any) => void) => () => void
       removeAllListeners: (channel: string) => void
     }
   }
