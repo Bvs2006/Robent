@@ -201,12 +201,13 @@ function initSchema() {
   ensureColumn('jobs', 'is_blocked', 'is_blocked INTEGER DEFAULT 0')
   ensureColumn('jobs', 'blocked_reason', "blocked_reason TEXT DEFAULT ''")
   ensureColumn('jobs', 'plan_approved', 'plan_approved INTEGER DEFAULT 0')
+  ensureColumn('jobs', 'model', "model TEXT DEFAULT ''")
   ensureColumn('terminal_lines', 'subtask_id', "subtask_id TEXT DEFAULT ''")
   ensureColumn('terminal_lines', 'agent', "agent TEXT DEFAULT ''")
 }
 
 const JOB_COLUMNS = new Set([
-  'title', 'description', 'status', 'priority', 'agent', 'branch', 'worktree',
+  'title', 'description', 'status', 'priority', 'agent', 'model', 'branch', 'worktree',
   'pr_number', 'ci_status', 'runtime', 'started_at', 'completed_at', 'failed_tests',
   'sub_status', 'token_count', 'estimated_cost', 'diff', 'skill_ids', 'changes',
   'execution_mode', 'custom_agent_pool', 'subtasks', 'is_blocked', 'blocked_reason',
@@ -261,12 +262,13 @@ export function createJob(job: {
   description: string
   agent: string
   priority: string
+  model?: string
   execution_mode?: string
   custom_agent_pool?: string
 }): void {
   getDb()
-    .prepare(`INSERT INTO jobs (id, title, description, agent, priority, status, execution_mode, custom_agent_pool) VALUES (?, ?, ?, ?, ?, 'planned', ?, ?)`)
-    .run(job.id, job.title, job.description, job.agent, job.priority, job.execution_mode || 'auto', job.custom_agent_pool || '[]')
+    .prepare(`INSERT INTO jobs (id, title, description, agent, priority, model, status, execution_mode, custom_agent_pool) VALUES (?, ?, ?, ?, ?, ?, 'planned', ?, ?)`)
+    .run(job.id, job.title, job.description, job.agent, job.priority, job.model || '', job.execution_mode || 'auto', job.custom_agent_pool || '[]')
 }
 
 export function getJobs(): any[] {

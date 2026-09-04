@@ -14,6 +14,9 @@ import {
   AlertCircle,
   Search,
   Flame,
+  Cpu,
+  Terminal as TerminalIcon,
+  ChevronUp,
 } from 'lucide-react';
 import { useFleetStore } from '../../store/fleetStore';
 import { Terminal } from 'xterm';
@@ -46,6 +49,34 @@ export default function TerminalView() {
   const [searchFileQuery, setSearchFileQuery] = useState('');
   const [selectedAgentFilter, setSelectedAgentFilter] = useState<string>('all');
   const [startingPreview, setStartingPreview] = useState(false);
+  const [showSlashMenu, setShowSlashMenu] = useState(false);
+  const [showModelPicker, setShowModelPicker] = useState(false);
+  const [activeModel, setActiveModel] = useState(task?.model || 'claude-3-7-sonnet');
+
+  // Supported model choices
+  const AVAILABLE_MODELS = [
+    { id: 'claude-3-7-sonnet', name: 'Claude 3.7 Sonnet', desc: 'Hybrid reasoning, deep coding' },
+    { id: 'claude-3-5-sonnet-latest', name: 'Claude 3.5 Sonnet', desc: 'Fast, high-fidelity coding' },
+    { id: 'gpt-4o', name: 'GPT-4o', desc: 'Omni multi-modal powerhouse' },
+    { id: 'gpt-4o-mini', name: 'GPT-4o Mini', desc: 'Fast, cost-efficient for small fixes' },
+    { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', desc: '2M context, deep reasoning' },
+    { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', desc: 'Ultra-fast inference speed' },
+    { id: 'deepseek-chat', name: 'DeepSeek V3', desc: 'Cost-effective open-weights model' },
+    { id: 'deepseek-reasoner', name: 'DeepSeek R1', desc: 'Deep Chain-of-Thought reasoning' },
+  ];
+
+  // Slash commands catalogue
+  const SLASH_COMMANDS = [
+    { cmd: '/model', desc: 'Switch AI model (e.g. /model gpt-4o, /model claude-3-7-sonnet)', action: 'model' },
+    { cmd: '/agent', desc: 'Switch target agent CLI (e.g. /agent claude, /agent agy, /agent opencode)', action: 'agent' },
+    { cmd: '/clear', desc: 'Clear the terminal output screen', action: 'clear' },
+    { cmd: '/preview', desc: 'Launch live web preview & dev server', action: 'preview' },
+    { cmd: '/diff', desc: 'Inspect worktree git changes and diffs', action: 'diff' },
+    { cmd: '/merge', desc: 'Merge current task branch into main branch', action: 'merge' },
+    { cmd: '/stop', desc: 'Interrupt the running agent process immediately', action: 'stop' },
+    { cmd: '/restart', desc: 'Restart current task agent with fresh execution', action: 'restart' },
+    { cmd: '/help', desc: 'Show all available CLI shortcuts & slash commands', action: 'help' },
+  ];
 
   // Initialize xterm.js instance
   useEffect(() => {
@@ -174,21 +205,150 @@ export default function TerminalView() {
   // Task-specific activities
   const taskActivities = activities.filter((a) => (a as any).jobId === terminalTaskId || a.taskId === terminalTaskId || a.message.includes(task?.title || ''));
 
-  // Submit bottom input bar command
-  const handleSendInput = (e?: React.FormEvent) => {
-    e?.preventDefault();
-    if (!inputCommand.trim() || !terminalTaskId || !window.electronAPI?.sendTaskInput) return;
-    window.electronAPI.sendTaskInput(terminalTaskId, inputCommand + '\r\n');
+  // Switch task model handler
+  const handleSelectModel = async (modelId: string) => {
+    setActiveModel(modelId);
+    setShowModelPicker(false);
+    if (!terminalTaskId || !window.electronAPI?.updateJob) return;
+    await window.electronAPI.updateJob(terminalTaskId, { model: modelId });
     if (xtermRef.current) {
-      xtermRef.current.write(`\r\n\x1b[36m> ${inputCommand}\x1b[0m\r\n`);
+      xtermRef.current.writeln(`\r\n\x1b[35m[Robent] Switched AI model to: ${modelId}\x1b[0m\r\n`);
     }
-    setInputCommand('');
   };
 
-  // Keyboard shortcut for Esc interrupt
+  // Switch task agent handler
+  const handleSelectAgent = async (agentName: string) => {
+    if (!terminalTaskId || !window.electronAPI?.updateJob) return;
+    await window.electronAPI.updateJob(terminalTaskId, { agent: agentName });
+    if (xtermRef.current) {
+      xtermRef.current.writeln(`\r\n\x1b[35m[Robent] Switched target agent to: ${agentName}\x1b[0m\r\n`);
+    }
+    useFleetStore.getState().loadTasks();
+  };
+
+  // Submit bottom input bar command (with full slash commands support)
+  const handleSendInput = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    const raw = inputCommand.trim();
+    if (!raw || !terminalTaskId) return;
+
+    // Handle slash commands
+    if (raw.startsWith('/')) {
+      const parts = raw.split(/\s+/);
+      const cmd = parts[0].toLowerCase();
+      const arg = parts.slice(1).join(' ');
+
+      if (cmd === '/clear') {
+        xtermRef.current?.reset();
+        setInputCommand('');
+        setShowSlashMenu(false);
+        return;
+      }
+
+      if (cmd === '/model') {
+        if (!arg) {
+          setShowModelPicker(true);
+          setInputCommand('');
+          setShowSlashMenu(false);
+          return;
+        }
+        await handleSelectModel(arg);
+        setInputCommand('');
+        setShowSlashMenu(false);
+        return;
+      }
+
+      if (cmd === '/agent') {
+        if (arg) {
+          await handleSelectAgent(arg);
+        } else {
+          xtermRef.current?.writeln(`\r\n\x1b[33mUsage: /agent <Claude Code | Codex | Antigravity | OpenCode | Aider>\x1b[0m\r\n`);
+        }
+        setInputCommand('');
+        setShowSlashMenu(false);
+        return;
+      }
+
+      if (cmd === '/preview') {
+        setActiveInspectorTab('preview');
+        handleStartPreview();
+        setInputCommand('');
+        setShowSlashMenu(false);
+        return;
+      }
+
+      if (cmd === '/diff' || cmd === '/files') {
+        setActiveInspectorTab('files');
+        setInputCommand('');
+        setShowSlashMenu(false);
+        return;
+      }
+
+      if (cmd === '/merge') {
+        mergeTask(terminalTaskId);
+        setInputCommand('');
+        setShowSlashMenu(false);
+        return;
+      }
+
+      if (cmd === '/stop') {
+        stopTask(terminalTaskId);
+        xtermRef.current?.writeln(`\r\n\x1b[31m[Robent] Task stopped via /stop\x1b[0m\r\n`);
+        setInputCommand('');
+        setShowSlashMenu(false);
+        return;
+      }
+
+      if (cmd === '/restart') {
+        await stopTask(terminalTaskId);
+        setTimeout(() => startTask(terminalTaskId), 500);
+        xtermRef.current?.writeln(`\r\n\x1b[32m[Robent] Restarting agent on task...\x1b[0m\r\n`);
+        setInputCommand('');
+        setShowSlashMenu(false);
+        return;
+      }
+
+      if (cmd === '/help') {
+        xtermRef.current?.writeln(`\r\n\x1b[1;36m=== Robent Slash Commands ===\x1b[0m`);
+        xtermRef.current?.writeln(`  \x1b[33m/model [name]\x1b[0m   - Switch active model (e.g. /model gpt-4o, /model claude-3-7-sonnet)`);
+        xtermRef.current?.writeln(`  \x1b[33m/agent <name>\x1b[0m   - Switch agent (e.g. /agent claude, /agent agy, /agent opencode)`);
+        xtermRef.current?.writeln(`  \x1b[33m/clear\x1b[0m          - Clear the terminal screen`);
+        xtermRef.current?.writeln(`  \x1b[33m/preview\x1b[0m        - Switch to live web preview / launch dev server`);
+        xtermRef.current?.writeln(`  \x1b[33m/diff\x1b[0m           - Switch to file changes tab`);
+        xtermRef.current?.writeln(`  \x1b[33m/merge\x1b[0m          - Merge current task branch into main`);
+        xtermRef.current?.writeln(`  \x1b[33m/stop\x1b[0m           - Terminate running agent process`);
+        xtermRef.current?.writeln(`  \x1b[33m/restart\x1b[0m        - Restart task execution`);
+        xtermRef.current?.writeln(`  \x1b[33m/help\x1b[0m           - Display this help message\r\n`);
+        setInputCommand('');
+        setShowSlashMenu(false);
+        return;
+      }
+    }
+
+    if (window.electronAPI?.sendTaskInput) {
+      window.electronAPI.sendTaskInput(terminalTaskId, inputCommand + '\r\n');
+      if (xtermRef.current) {
+        xtermRef.current.write(`\r\n\x1b[36m> ${inputCommand}\x1b[0m\r\n`);
+      }
+    }
+    setInputCommand('');
+    setShowSlashMenu(false);
+  };
+
+  // Keyboard shortcut for Esc interrupt and slash suggestions
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Escape' && task?.status === 'working') {
-      stopTask(terminalTaskId!);
+    if (e.key === 'Escape') {
+      if (showSlashMenu) {
+        setShowSlashMenu(false);
+        return;
+      }
+      if (showModelPicker) {
+        setShowModelPicker(false);
+        return;
+      }
+      if (task?.status === 'working') {
+        stopTask(terminalTaskId!);
+      }
     }
   };
 
@@ -322,22 +482,123 @@ export default function TerminalView() {
           </div>
 
           {/* Reference Bottom Interactive Input Box & Status Line */}
-          <div className="bg-[#0f0f12] border-t border-[#1a1a22] p-2.5 space-y-2 shrink-0">
+          <div className="bg-[#0f0f12] border-t border-[#1a1a22] p-2.5 space-y-2 shrink-0 relative">
+            
+            {/* Slash Command Autocomplete / Suggestions Menu */}
+            {showSlashMenu && (
+              <div className="absolute bottom-full left-2.5 right-2.5 mb-2 bg-[#141418] border border-[#272732] rounded-xl shadow-2xl overflow-hidden z-30 max-h-64 flex flex-col">
+                <div className="px-3 py-2 bg-[#1b1b22] border-b border-[#252530] flex items-center justify-between text-xs text-zinc-400 font-mono">
+                  <span className="font-bold text-sky-400 flex items-center gap-1.5">
+                    <TerminalIcon className="w-3.5 h-3.5" />
+                    <span>Robent Slash Commands</span>
+                  </span>
+                  <span className="text-[10px] text-zinc-500">esc to close</span>
+                </div>
+                <div className="overflow-y-auto p-1.5 space-y-0.5">
+                  {SLASH_COMMANDS
+                    .filter((c) => c.cmd.toLowerCase().includes(inputCommand.toLowerCase()))
+                    .map((item) => (
+                      <button
+                        key={item.cmd}
+                        onClick={() => {
+                          if (item.action === 'model') {
+                            setShowSlashMenu(false);
+                            setShowModelPicker(true);
+                            setInputCommand('');
+                          } else {
+                            setInputCommand(item.cmd);
+                            setShowSlashMenu(false);
+                          }
+                        }}
+                        className="w-full text-left px-3 py-1.5 rounded-lg hover:bg-[#202028] flex items-center justify-between group transition-colors"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-mono font-bold text-sky-400 group-hover:text-sky-300">
+                            {item.cmd}
+                          </span>
+                          <span className="text-xs text-zinc-400 group-hover:text-zinc-200">
+                            {item.desc}
+                          </span>
+                        </div>
+                        <span className="text-[10px] font-mono text-zinc-600 group-hover:text-zinc-400">
+                          ↵ select
+                        </span>
+                      </button>
+                    ))}
+                </div>
+              </div>
+            )}
+
+            {/* Model Picker Popup Modal */}
+            {showModelPicker && (
+              <div className="absolute bottom-full left-2.5 right-2.5 mb-2 bg-[#141418] border border-[#272732] rounded-xl shadow-2xl overflow-hidden z-30 flex flex-col">
+                <div className="px-3 py-2 bg-[#1b1b22] border-b border-[#252530] flex items-center justify-between text-xs text-zinc-400 font-mono">
+                  <span className="font-bold text-purple-400 flex items-center gap-1.5">
+                    <Cpu className="w-3.5 h-3.5" />
+                    <span>Select AI Model for {task?.agent || 'CLI'}</span>
+                  </span>
+                  <button
+                    onClick={() => setShowModelPicker(false)}
+                    className="text-zinc-500 hover:text-white"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <div className="p-2 grid grid-cols-2 gap-1.5 max-h-56 overflow-y-auto">
+                  {AVAILABLE_MODELS.map((m) => (
+                    <button
+                      key={m.id}
+                      onClick={() => handleSelectModel(m.id)}
+                      className={`text-left p-2 rounded-lg border transition-all flex flex-col gap-0.5 ${
+                        activeModel === m.id
+                          ? 'bg-purple-950/40 border-purple-600 text-purple-200'
+                          : 'bg-[#181820] border-[#22222c] text-zinc-300 hover:border-zinc-500'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold font-mono">{m.name}</span>
+                        {activeModel === m.id && (
+                          <span className="text-[10px] bg-purple-500 text-zinc-950 font-extrabold px-1.5 rounded">Active</span>
+                        )}
+                      </div>
+                      <span className="text-[10px] text-zinc-400 truncate">{m.desc}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Input Form Bar */}
             <form onSubmit={handleSendInput} className="flex items-center gap-2 bg-[#18181c] border border-[#272730] rounded-xl px-3 py-1.5 focus-within:border-sky-500 transition-colors">
               <span className="text-zinc-500 font-mono text-xs select-none">❯</span>
               <input
                 type="text"
                 value={inputCommand}
-                onChange={(e) => setInputCommand(e.target.value)}
-                placeholder={task?.status === 'working' ? 'Send input to CLI agent (e.g. y, continue, or prompt)...' : 'Agent is idle. Click Start Agent above to launch.'}
-                disabled={task?.status !== 'working'}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setInputCommand(val);
+                  if (val.startsWith('/')) {
+                    setShowSlashMenu(true);
+                  } else {
+                    setShowSlashMenu(false);
+                  }
+                }}
+                placeholder={task?.status === 'working' ? 'Type input or / for commands (/model, /preview, /diff)...' : 'Type / for commands (/model, /restart, /help)...'}
                 className="flex-1 bg-transparent text-xs text-zinc-100 outline-none placeholder:text-zinc-500 font-mono"
               />
               <button
+                type="button"
+                onClick={() => setShowSlashMenu(!showSlashMenu)}
+                className="px-2 py-0.5 rounded bg-[#24242e] hover:bg-[#2d2d3a] text-zinc-300 text-[11px] font-mono font-bold transition-colors"
+                title="Open slash commands menu"
+              >
+                /
+              </button>
+              <button
                 type="submit"
-                disabled={!inputCommand.trim() || task?.status !== 'working'}
+                disabled={!inputCommand.trim()}
                 className="text-zinc-400 hover:text-sky-400 disabled:opacity-30 disabled:hover:text-zinc-400 transition-colors"
-                title="Send command to agent"
+                title="Send command"
               >
                 <Send className="w-3.5 h-3.5" />
               </button>
@@ -351,11 +612,22 @@ export default function TerminalView() {
                   <span>{task?.agent || 'CLI Agent'}</span>
                 </span>
                 <span className="text-zinc-600">·</span>
+                {/* Clickable Model Switcher Badge */}
+                <button
+                  onClick={() => setShowModelPicker(!showModelPicker)}
+                  className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#1c1c24] hover:bg-[#282834] text-purple-300 border border-purple-800/40 text-[10px] font-semibold transition-colors"
+                  title="Click to change model"
+                >
+                  <Cpu className="w-2.5 h-2.5" />
+                  <span>{activeModel}</span>
+                  <ChevronUp className="w-2.5 h-2.5 opacity-60" />
+                </button>
+                <span className="text-zinc-600">·</span>
                 <span className="text-zinc-400 truncate max-w-xs">{task?.worktree || 'Isolated worktree'}</span>
               </div>
               <div className="flex items-center gap-3 shrink-0">
+                <span>/ <span className="text-zinc-400">commands</span></span>
                 <span>esc <span className="text-zinc-400">interrupt</span></span>
-                <span>ctrl+p <span className="text-zinc-400">commands</span></span>
                 {task?.runtime ? (
                   <span className="text-emerald-400 font-bold">{Math.floor(task.runtime / 60)}m {task.runtime % 60}s</span>
                 ) : null}

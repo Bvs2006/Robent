@@ -49,6 +49,7 @@ function dbRowToTask(row: any): Task {
     status: row.status,
     priority: row.priority,
     agent: row.agent,
+    model: row.model || undefined,
     branch: row.branch || undefined,
     worktree: row.worktree || undefined,
     prNumber: row.pr_number || undefined,
@@ -134,7 +135,7 @@ interface FleetState {
   selectedTaskId: string | null
   selectTask: (id: string | null) => void
   loadTasks: () => Promise<void>
-  createTask: (title: string, desc: string, agent: AgentName, priority: Task['priority']) => Promise<Task>
+  createTask: (title: string, desc: string, agent: AgentName, priority: Task['priority'], model?: string) => Promise<Task>
   deleteTask: (taskId: string) => Promise<void>
   clearPlannedTasks: () => Promise<void>
   startTask: (taskId: string, workdir?: string) => Promise<void>
@@ -310,10 +311,10 @@ export const useFleetStore = create<FleetState>((set, get) => ({
     })
   },
 
-  createTask: async (title, desc, agent, priority) => {
+  createTask: async (title, desc, agent, priority, model) => {
     if (!ipc) throw new Error('IPC not available')
     const id = newTaskId()
-    const row = await ipc.createJob({ id, title, description: desc, agent, priority })
+    const row = await ipc.createJob({ id, title, description: desc, agent, priority, model: model || undefined })
     const t = dbRowToTask(row)
     set((s) => ({ tasks: [t, ...s.tasks] }))
     get().addNotification('success', `Task created: ${title}`)

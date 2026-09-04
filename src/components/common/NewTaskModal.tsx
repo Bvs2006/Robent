@@ -104,7 +104,7 @@ export default function NewTaskModal() {
       }
 
       // Single-agent direct run
-      const created = await createTask(taskTitle, taskDesc, selectedAgent, 'normal');
+      const created = await createTask(taskTitle, taskDesc, selectedAgent, 'normal', selectedModel);
       setShowNewTaskModal(false);
       await startTask(created.id);
       openTerminal(created.id);

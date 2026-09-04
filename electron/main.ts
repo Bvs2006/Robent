@@ -475,14 +475,14 @@ async function startAgentRun(
   const timeoutMinutes = Number.parseInt(settings.defaultTimeout || '30', 10)
   const timeoutMs = Number.isFinite(timeoutMinutes) && timeoutMinutes > 0 ? timeoutMinutes * 60_000 : 30 * 60_000
 
-  // Model selection override based on task size / complexity
-  const selectedModel = job.description.toLowerCase().includes('unit-test') || job.description.toLowerCase().includes('small')
-    ? 'gpt-4o-mini'
-    : 'claude-3-7-sonnet'
+  // Model selection: explicit job.model override > task size/complexity heuristic
+  const selectedModel = job.model && job.model !== 'Agent default'
+    ? job.model
+    : (job.description.toLowerCase().includes('unit-test') || job.description.toLowerCase().includes('small')
+      ? 'gpt-4o-mini'
+      : 'claude-3-7-sonnet')
 
-  if (agent === 'OpenCode' || agent === 'Aider') {
-    addActivity({ id: genId(), jobId: taskId, type: 'model_selected', message: `${agent} model selected: ${selectedModel}` })
-  }
+  addActivity({ id: genId(), jobId: taskId, type: 'model_selected', message: `${agent} running with model: ${selectedModel}` })
 
   const { jobId: runId, promise } = driver.run(
     prompt,
@@ -557,7 +557,7 @@ async function startAgentRun(
 ipcMain.handle('get-jobs', () => getJobs())
 ipcMain.handle('get-job', (_e, id: string) => getJob(id))
 
-ipcMain.handle('create-job', (_e, job: { id: string; title: string; description: string; agent: string; priority: string }) => {
+ipcMain.handle('create-job', (_e, job: { id: string; title: string; description: string; agent: string; priority: string; model?: string }) => {
   createJob(job)
   addActivity({ id: genId(), jobId: job.id, type: 'task_created', message: `Task created — ${job.title}` })
   return getJob(job.id)
@@ -797,21 +797,25 @@ ipcMain.handle('run-task', async (event, { taskId, agent, workdir }: { taskId: s
   const customPool = parseJsonArray(job.custom_agent_pool)
   const availableTools = getToolStatusSnapshots()
 
-  const selection = selectDriverForSubtask(job.title + ' ' + job.description, mode, customPool, availableTools)
+  // Use explicitly requested agent first, fallback to job.agent or selection
+  const targetAgent = agent || job.agent || 'Claude Code'
 
-  if (selection.blocked) {
-    updateJob(taskId, {
-      is_blocked: 1,
-      blocked_reason: selection.reason || 'No selected tool fits this subtask',
-      sub_status: selection.reason || 'No selected tool fits this subtask',
-    })
-    emit('state-changed')
-    return { error: selection.reason || 'No selected tool fits this subtask' }
+  let chosenAgent = targetAgent
+  if (mode === 'custom' && customPool && customPool.length > 0) {
+    const selection = selectDriverForSubtask(job.title + ' ' + job.description, mode, customPool, availableTools)
+    if (selection.blocked) {
+      updateJob(taskId, {
+        is_blocked: 1,
+        blocked_reason: selection.reason || 'No selected tool fits this subtask',
+        sub_status: selection.reason || 'No selected tool fits this subtask',
+      })
+      emit('state-changed')
+      return { error: selection.reason || 'No selected tool fits this subtask' }
+    }
+    chosenAgent = selection.agent || targetAgent
   }
 
-  updateJob(taskId, { is_blocked: 0, blocked_reason: null })
-  const chosenAgent = selection.agent || agent
-
+  updateJob(taskId, { is_blocked: 0, blocked_reason: null, agent: chosenAgent })
   return startAgentRun(event, taskId, chosenAgent, workdir)
 })
 

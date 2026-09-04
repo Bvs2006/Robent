@@ -41,6 +41,7 @@ export interface Task {
   status: TaskStatus
   agent: AgentName
   priority: Priority
+  model?: string
   branch?: string
   worktree?: string
   prNumber?: number
