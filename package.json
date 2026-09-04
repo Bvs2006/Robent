@@ -9,7 +9,7 @@
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
-    "dev": "vite",
+    "dev": "node scripts/dev.js",
     "start": "electron .",
     "build": "tsc -b && vite build && electron-builder",
     "lint": "oxlint",

@@ -32,8 +32,8 @@
     "binary": "aider",
     "capability": "small precise diffs and tight scope",
     "available": false,
-    "status": "not-installed",
-    "version": null
+    "status": "installed-not-signed-in",
+    "version": "python.exe C:\\Users\\bvsru\\AppData\\Roaming\\Python\\Python314\\Scripts\\aider\r\n0.86.3.dev+less"
   },
   {
     "id": "opencode",

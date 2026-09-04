@@ -17,8 +17,13 @@ if (typeof (globalThis as any).__filename === 'undefined') {
 }
 
 import { app, BrowserWindow, ipcMain, safeStorage, dialog, shell } from 'electron'
-import electronUpdater from 'electron-updater'
-const autoUpdater = (electronUpdater as any)?.autoUpdater || (electronUpdater as any)?.default?.autoUpdater || electronUpdater
+import { createRequire } from 'module'
+const _require = createRequire(import.meta.url)
+let autoUpdater: any = null
+try {
+  const electronUpdater = _require('electron-updater')
+  autoUpdater = electronUpdater.autoUpdater || electronUpdater.default?.autoUpdater
+} catch {}
 import type { ChildProcess } from 'child_process'
 import { existsSync, mkdirSync, readdirSync, statSync } from 'fs'
 import { simpleGit } from 'simple-git'
@@ -116,7 +121,12 @@ function createWindow() {
   })
 
   if (VITE_DEV_SERVER_URL) {
-    win.loadURL(VITE_DEV_SERVER_URL)
+    const loadDev = () => {
+      win?.loadURL(VITE_DEV_SERVER_URL).catch(() => {
+        setTimeout(loadDev, 500)
+      })
+    }
+    loadDev()
     // win.webContents.openDevTools()
   } else {
     win.loadFile(join(RENDERER_DIST, 'index.html'))
