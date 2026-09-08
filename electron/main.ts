@@ -120,6 +120,8 @@ function createWindow() {
     win?.focus()
   })
 
+  win.on('closed', () => { win = null })
+
   if (VITE_DEV_SERVER_URL) {
     const loadDev = () => {
       win?.loadURL(VITE_DEV_SERVER_URL).catch(() => {
@@ -129,13 +131,16 @@ function createWindow() {
     loadDev()
     // win.webContents.openDevTools()
   } else {
-    win.loadFile(join(RENDERER_DIST, 'index.html'))
+    win.loadFile(join(RENDERER_DIST, 'index.html')).catch((err) => {
+      console.error('Failed to load index.html:', err)
+    })
   }
 }
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 if (!gotSingleInstanceLock) {
   app.quit()
+  process.exit(0)
 } else {
   app.on('second-instance', () => {
     if (win) {
@@ -162,8 +167,19 @@ if (!gotSingleInstanceLock) {
     previewServers.clear()
   }
 
-  app.on('before-quit', cleanupPreviewServers)
+  const cleanupActiveJobs = () => {
+    for (const [_taskId, job] of activeJobs.entries()) {
+      try { job.driver.cancel(job.jobId) } catch { /* ignore */ }
+    }
+    activeJobs.clear()
+  }
+
+  app.on('before-quit', () => {
+    cleanupActiveJobs()
+    cleanupPreviewServers()
+  })
   app.on('window-all-closed', () => {
+    cleanupActiveJobs()
     cleanupPreviewServers()
     if (process.platform !== 'darwin') { app.quit(); win = null }
   })
@@ -186,7 +202,7 @@ if (!gotSingleInstanceLock) {
     createWindow()
 
     // Auto-update checking for packaged desktop application
-    if (app.isPackaged) {
+    if (app.isPackaged && autoUpdater) {
       autoUpdater.autoDownload = true
       autoUpdater.autoInstallOnAppQuit = true
 
@@ -215,7 +231,11 @@ if (!gotSingleInstanceLock) {
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
 function emit(channel: string, ...args: any[]) {
-  win?.webContents.send(channel, ...args)
+  try {
+    if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
+      win.webContents.send(channel, ...args)
+    }
+  } catch { /* window may have been destroyed between check and send */ }
 }
 
 function toolSetupCompleted(): boolean {
@@ -400,7 +420,7 @@ async function finalizeTaskRun(
 }
 
 async function startAgentRun(
-  event: Electron.IpcMainInvokeEvent,
+  _event: Electron.IpcMainInvokeEvent,
   taskId: string,
   agent: string,
   workdir: string,
@@ -498,11 +518,6 @@ async function startAgentRun(
     prompt,
     actualWorkdir,
     (chunk) => {
-      try {
-        event.sender.send('task-output', taskId, chunk, agent)
-      } catch {
-        /* sender may have been closed/navigated */
-      }
       emit('task-output', taskId, chunk, agent)
       addTerminalLine({ id: genId(), jobId: taskId, type: 'output', content: chunk, agent })
 
@@ -511,11 +526,6 @@ async function startAgentRun(
         const promptId = genId()
         const cmdMatch = chunk.match(/(?:`|\$|command:)\s*([^\r\n`]+)/i)
         const command = cmdMatch ? cmdMatch[1].trim() : 'CLI Command Execution'
-        try {
-          event.sender.send('command-approval-requested', { taskId, promptId, command })
-        } catch {
-          /* ignore */
-        }
         emit('command-approval-requested', { taskId, promptId, command })
       }
     },
@@ -618,11 +628,12 @@ ipcMain.handle('save-tool-secret', (_e, payload: { toolId: string; label: string
   return { success: true }
 })
 ipcMain.handle('run-tool-action', async (event, payload: { toolId: string; kind: 'install' | 'auth' | 'terminal'; secret?: string; cwd?: string }) => {
+  const safeSend = (channel: string, ...args: any[]) => { try { event.sender.send(channel, ...args) } catch { /* renderer may be gone */ } }
   const { sessionId, promise } = runToolAction(
     payload.toolId as any,
     payload.kind,
     (chunk) => {
-      event.sender.send('tool-output', payload.toolId, sessionId, chunk)
+      safeSend('tool-output', payload.toolId, sessionId, chunk)
     },
     () => {
       refreshToolStatuses()
@@ -634,7 +645,7 @@ ipcMain.handle('run-tool-action', async (event, payload: { toolId: string; kind:
   )
 
   activeToolSessions.set(sessionId, { toolId: payload.toolId, kind: payload.kind, sessionId })
-  event.sender.send('tool-action-started', payload.toolId, sessionId, payload.kind)
+  safeSend('tool-action-started', payload.toolId, sessionId, payload.kind)
 
   if (payload.kind === 'terminal') {
     promise
@@ -645,7 +656,7 @@ ipcMain.handle('run-tool-action', async (event, payload: { toolId: string; kind:
           return null
         })
         if (statuses) emit('tool-statuses-changed', statuses)
-        event.sender.send('tool-action-ended', payload.toolId, sessionId, result.exitCode, result.rawOutput)
+        safeSend('tool-action-ended', payload.toolId, sessionId, result.exitCode, result.rawOutput)
       })
       .catch((error) => {
         activeToolSessions.delete(sessionId)
@@ -661,7 +672,7 @@ ipcMain.handle('run-tool-action', async (event, payload: { toolId: string; kind:
     return null
   })
   if (statuses) emit('tool-statuses-changed', statuses)
-  event.sender.send('tool-action-ended', payload.toolId, sessionId, result.exitCode, result.rawOutput)
+  safeSend('tool-action-ended', payload.toolId, sessionId, result.exitCode, result.rawOutput)
   return { sessionId, exitCode: result.exitCode }
 })
 
@@ -1119,6 +1130,10 @@ ipcMain.handle('start-preview-server', (_e, taskId: string) => {
     env: { ...(process.env as Record<string, string>), PORT: String(port) },
   })
 
+  proc.on('error', (err) => {
+    console.error(`Preview server spawn error for task ${taskId}:`, err)
+  })
+
   let output = ''
   const markReady = (resolvedPort: number) => {
     if (previewServers.has(taskId)) return
@@ -1296,7 +1311,7 @@ ipcMain.handle('toggle-plugin', (_e, id: string, enabled: boolean) => {
 
 ipcMain.handle('open-external', (_e, url: string) => {
   if (url && (url.startsWith('http://') || url.startsWith('https://'))) {
-    shell.openExternal(url)
+    shell.openExternal(url).catch(() => { /* ignore open failures */ })
   }
   return { success: true }
 })
@@ -1305,13 +1320,18 @@ ipcMain.handle('open-native-terminal', () => {
   const isWin = process.platform === 'win32'
   const workdir = getProjects().find((p: any) => p.is_active === 1)?.path || process.cwd()
 
-  if (isWin) {
-    childSpawn('cmd.exe', ['/c', 'start', 'cmd.exe'], { cwd: workdir, detached: true, stdio: 'ignore' })
-  } else if (process.platform === 'darwin') {
-    childSpawn('open', ['-a', 'Terminal', workdir], { detached: true, stdio: 'ignore' })
-  } else {
-    childSpawn('x-terminal-emulator', [], { cwd: workdir, detached: true, stdio: 'ignore' })
-  }
+  try {
+    let proc
+    if (isWin) {
+      proc = childSpawn('cmd.exe', ['/c', 'start', 'cmd.exe'], { cwd: workdir, detached: true, stdio: 'ignore' })
+    } else if (process.platform === 'darwin') {
+      proc = childSpawn('open', ['-a', 'Terminal', workdir], { detached: true, stdio: 'ignore' })
+    } else {
+      proc = childSpawn('x-terminal-emulator', [], { cwd: workdir, detached: true, stdio: 'ignore' })
+    }
+    proc.on('error', () => { /* ignore missing terminal binary */ })
+    proc.unref()
+  } catch { /* ignore spawn failures */ }
   return { success: true }
 })
 
@@ -1324,7 +1344,8 @@ ipcMain.handle('set-setting', (_e, key: string, value: string) => {
 
 // ─── IPC: Projects ───────────────────────────────────────────────────────────────
 ipcMain.handle('show-open-dialog', async () => {
-  const { canceled, filePaths } = await dialog.showOpenDialog(win!, {
+  if (!win || win.isDestroyed()) return { canceled: true, filePaths: [] }
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
     properties: ['openDirectory'],
   })
   return { canceled, filePaths }
@@ -1402,7 +1423,7 @@ setInterval(() => {
 
 // ─── IPC: Auto Updater ────────────────────────────────────────────────────────
 ipcMain.handle('check-for-updates', async () => {
-  if (!app.isPackaged) return { isPackaged: false, message: 'Updates only run in packaged desktop builds' }
+  if (!app.isPackaged || !autoUpdater) return { isPackaged: false, message: 'Updates only run in packaged desktop builds' }
   try {
     const res = await autoUpdater.checkForUpdates()
     return { success: true, updateInfo: res?.updateInfo }
@@ -1412,7 +1433,7 @@ ipcMain.handle('check-for-updates', async () => {
 })
 
 ipcMain.handle('restart-and-update', () => {
-  if (app.isPackaged) {
+  if (app.isPackaged && autoUpdater) {
     autoUpdater.quitAndInstall()
   }
 })

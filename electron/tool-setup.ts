@@ -583,8 +583,18 @@ export function runToolAction(
   return { sessionId, promise: tracked }
 }
 
+function getProfileDir(): string {
+  try {
+    // Use Electron's userData path (writable even in packaged apps)
+    const { app } = require('electron')
+    return app.getPath('userData')
+  } catch {
+    return process.cwd()
+  }
+}
+
 export function syncAgentProfiles(statuses: ToolSnapshot[]): void {
-  const profilePath = join(process.cwd(), 'agent-profiles.json')
+  const profilePath = join(getProfileDir(), 'agent-profiles.json')
   const profiles = TOOL_IDS.map((toolId) => {
     const def = TOOL_DEFINITIONS[toolId]
     const status = statuses.find((item) => item.toolId === toolId)
@@ -600,11 +610,15 @@ export function syncAgentProfiles(statuses: ToolSnapshot[]): void {
     }
   })
 
-  writeFileSync(profilePath, JSON.stringify(profiles, null, 2), 'utf8')
+  try {
+    writeFileSync(profilePath, JSON.stringify(profiles, null, 2), 'utf8')
+  } catch (err) {
+    console.error('Failed to write agent-profiles.json:', err)
+  }
 }
 
 export function loadAgentProfilesFromDisk(): any[] {
-  const profilePath = join(process.cwd(), 'agent-profiles.json')
+  const profilePath = join(getProfileDir(), 'agent-profiles.json')
   if (!existsSync(profilePath)) return []
   try {
     return JSON.parse(readFileSync(profilePath, 'utf8'))
